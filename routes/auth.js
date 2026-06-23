@@ -1,0 +1,253 @@
+// Auth routes: login, logout, verify
+
+var express = require('express');
+var router = express.Router();
+var sessions = require('../lib/sessions');
+var users = require('../lib/users');
+var logger = require('../lib/logger');
+var auth = require('../middleware/auth');
+
+var generateToken = sessions.generateToken;
+var saveSessions = sessions.saveSessions;
+var getSessions = sessions.getSessions;
+var loadUsers = users.loadUsers;
+var saveUsers = users.saveUsers;
+var hashPassword = users.hashPassword;
+var verifyPassword = users.verifyPassword;
+var logOperation = logger.logOperation;
+
+// POST /api/auth/login
+router.post('/login', async function(req, res) {
+    try {
+        var username = req.body.username;
+        var password = req.body.password;
+        
+        if (!username || !password) {
+            return res.status(400).json({ success: false, message: '用户名和密码不能为空' });
+        }
+        
+        var allUsers = await loadUsers();
+        var user = allUsers.find(function(u) { return u.username === username; });
+        
+        if (!user || !(await verifyPassword(password, user.password))) {
+            logOperation(username, 'LOGIN_FAILED', 'users', { reason: 'invalid-credentials' });
+            return res.status(401).json({ success: false, message: '用户名或密码错误' });
+        }
+        
+        // Security fix C1: auto-upgrade legacy plaintext passwords to bcrypt
+        if (!user.password.startsWith('$2')) {
+            var allUsers = await loadUsers();
+            var upgradeIdx = allUsers.findIndex(function(u) { return u.username === username; });
+            if (upgradeIdx !== -1) {
+                allUsers[upgradeIdx].password = await hashPassword(password);
+                await saveUsers(allUsers);
+                console.log('[SECURITY] Auto-upgraded plaintext password for user: ' + username);
+            }
+        }
+        
+        var token = generateToken(username);
+        var allSessions = getSessions();
+        
+        allSessions[username] = {
+            username: user.username,
+            role: user.role,
+            name: user.name,
+            jiraPat: user.jiraPat || '',
+            jiraName: user.jiraName || '',
+            token: token,
+            createdAt: Date.now()
+        };
+        
+        logOperation(username, 'LOGIN', 'users', { role: user.role });
+        console.log('User logged in: ' + username + ', role: ' + user.role);
+        await saveSessions();
+        
+        res.cookie('token', token, {
+            httpOnly: true,
+            maxAge: 24 * 60 * 60 * 1000,
+            sameSite: 'lax'
+        });
+        
+        res.json({ 
+            success: true, 
+            user: { username: user.username, role: user.role, name: user.name },
+            token: token
+        });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// POST /api/auth/logout
+router.post('/logout', async function(req, res) {
+    try {
+        var token = req.cookies && req.cookies.token;
+        if (!token) {
+            var authHeader = req.headers['authorization'];
+            token = authHeader && authHeader.split(' ')[1];
+        }
+        
+        if (token) {
+            var allSessions = getSessions();
+            var session = null;
+            var keys = Object.keys(allSessions);
+            for (var i = 0; i < keys.length; i++) {
+                if (allSessions[keys[i]].token === token) {
+                    session = allSessions[keys[i]];
+                    break;
+                }
+            }
+            if (session) {
+                logOperation(session.username, 'LOGOUT', 'users');
+                delete allSessions[session.username];
+                console.log('User logged out: ' + session.username);
+                await saveSessions();
+            }
+        }
+        
+        res.clearCookie('token');
+        res.json({ success: true, message: '登出成功' });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// GET /api/auth/verify
+router.get('/verify', auth.authenticateToken, function(req, res) {
+    res.json({ 
+        success: true,
+        user: {
+            username: req.user.username,
+            role: req.user.role,
+            name: req.user.name
+        }
+    });
+});
+
+// ============ Admin: User Management ============
+
+// GET /api/auth/users - list all users (admin only)
+router.get('/users', auth.authenticateToken, auth.requireAdmin, async function(req, res) {
+    try {
+        var allUsers = await loadUsers();
+        var safeUsers = allUsers.map(function(u) {
+            return { id: u.id, username: u.username, role: u.role, name: u.name, createdAt: u.createdAt };
+        });
+        res.json({ success: true, data: safeUsers });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// POST /api/auth/users - create a new user (admin only)
+router.post('/users', auth.authenticateToken, auth.requireAdmin, async function(req, res) {
+    try {
+        var body = req.body;
+        if (!body.username || !body.password || !body.name) {
+            return res.status(400).json({ success: false, message: '用户名、密码和姓名为必填项' });
+        }
+        var allUsers = await loadUsers();
+        var exists = allUsers.find(function(u) { return u.username === body.username; });
+        if (exists) {
+            return res.status(400).json({ success: false, message: '用户名已存在' });
+        }
+        var newUser = {
+            id: 'user_' + Date.now(),
+            username: body.username,
+            password: await hashPassword(body.password),
+            role: body.role || 'user',
+            name: body.name,
+            createdAt: new Date().toISOString()
+        };
+        allUsers.push(newUser);
+        await saveUsers(allUsers);
+        logOperation(req.user.username, 'CREATE_USER', 'users', { target: body.username, role: newUser.role });
+        res.json({ success: true, data: { id: newUser.id, username: newUser.username, role: newUser.role, name: newUser.name } });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// DELETE /api/auth/users/:id - delete a user (admin only)
+router.delete('/users/:id', auth.authenticateToken, auth.requireAdmin, async function(req, res) {
+    try {
+        var targetId = req.params.id;
+        var allUsers = await loadUsers();
+        var target = allUsers.find(function(u) { return u.id === targetId; });
+        if (!target) {
+            return res.status(404).json({ success: false, message: '用户不存在' });
+        }
+        if (target.username === 'admin') {
+            return res.status(400).json({ success: false, message: '不能删除管理员账户' });
+        }
+        allUsers = allUsers.filter(function(u) { return u.id !== targetId; });
+        await saveUsers(allUsers);
+        logOperation(req.user.username, 'DELETE_USER', 'users', { target: target.username });
+        res.json({ success: true });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// PUT /api/auth/profile - update current user's JIRA settings
+router.put('/profile', auth.authenticateToken, async function(req, res) {
+    try {
+        var body = req.body;
+        var allUsers = await loadUsers();
+        var userIdx = allUsers.findIndex(function(u) { return u.username === req.user.username; });
+        if (userIdx === -1) {
+            return res.status(404).json({ success: false, message: '用户不存在' });
+        }
+
+        // Update jiraPat and jiraName
+        if (body.jiraPat !== undefined) {
+            allUsers[userIdx].jiraPat = body.jiraPat;
+        }
+        if (body.jiraName !== undefined) {
+            allUsers[userIdx].jiraName = body.jiraName;
+        }
+
+        await saveUsers(allUsers);
+        logOperation(req.user.username, 'UPDATE_PROFILE', 'users', { fields: Object.keys(body) });
+
+        // Update session with new jiraPat/jiraName
+        var sessions = require('../lib/sessions').getSessions();
+        if (sessions[req.user.username]) {
+            if (body.jiraPat !== undefined) sessions[req.user.username].jiraPat = body.jiraPat;
+            if (body.jiraName !== undefined) sessions[req.user.username].jiraName = body.jiraName;
+        }
+
+        res.json({
+            success: true,
+            data: {
+                jiraPat: allUsers[userIdx].jiraPat ? '***已设置***' : '',
+                jiraName: allUsers[userIdx].jiraName
+            }
+        });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// GET /api/auth/profile - get current user's JIRA settings
+router.get('/profile', auth.authenticateToken, async function(req, res) {
+    try {
+        var allUsers = await loadUsers();
+        var user = allUsers.find(function(u) { return u.username === req.user.username; });
+        if (!user) {
+            return res.status(404).json({ success: false, message: '用户不存在' });
+        }
+
+        res.json({
+            success: true,
+            data: {
+                jiraPat: user.jiraPat ? '***已设置***' : '',
+                jiraName: user.jiraName || ''
+            }
+        });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+module.exports = router;

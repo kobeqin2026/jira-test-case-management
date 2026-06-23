@@ -1,0 +1,63 @@
+// JIRA Test Case Manager - Independent Server
+// Standalone Express app for test case management
+
+var express = require('express');
+var path = require('path');
+var cookieParser = require('cookie-parser');
+var rateLimit = require('express-rate-limit');
+
+var sessions = require('./lib/sessions');
+var dataStore = require('./lib/dataStore');
+
+// Initialize data directory
+dataStore.ensureDataDir();
+
+// Load sessions and start auto-save
+sessions.loadSessions();
+sessions.startAutoSave(30000);
+sessions.setupGracefulShutdown();
+
+var app = express();
+var PORT = process.env.PORT || 3001;
+
+// Middleware
+app.use(express.json({ limit: '1mb' }));
+app.use(cookieParser());
+app.use(express.static(path.join(__dirname, 'public')));
+
+// Rate limiting
+var generalLimiter = rateLimit({
+    windowMs: 60 * 1000,   // 1 minute
+    max: 120,               // 120 requests per minute per IP
+    message: { success: false, error: '请求过于频繁，请稍后再试' }
+});
+app.use('/api/', generalLimiter);
+
+// Routes
+app.use('/api/auth', require('./routes/auth'));
+app.use('/api/testcase', require('./routes/testcase'));
+
+// Logs route (admin only)
+app.get('/api/logs/:date?', require('./middleware/auth').authenticateToken, require('./middleware/auth').requireAdmin, async function(req, res) {
+    try {
+        var date = req.params.date || new Date().toISOString().split('T')[0];
+        var logs = require('./lib/logger').readLogByDate(date);
+        res.json(logs);
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// SPA fallback — serve index.html for non-API routes
+app.get('*', function(req, res) {
+    if (!req.path.startsWith('/api/')) {
+        res.sendFile(path.join(__dirname, 'public', 'jira-test-case-management.html'));
+    } else {
+        res.status(404).json({ success: false, error: 'API not found' });
+    }
+});
+
+app.listen(PORT, '0.0.0.0', function() {
+    console.log('JIRA Test Case Manager running on http://0.0.0.0:' + PORT);
+    console.log('Data directory: ' + dataStore.DATA_DIR);
+});
