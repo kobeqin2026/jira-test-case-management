@@ -795,21 +795,61 @@ function renderDistributions(issues) {
 
     document.getElementById('dist-row').innerHTML = html;
 
-    // Daily execution trend chart
-    var dailyCount = {};
+    // Daily execution trend: track how many test cases were set to Validated each day
+    // Only show dates within the execution period (Actual Start Date to Actual End Date)
+    var execStart = selectedParent ? (selectedParent.actualStartDate || '').substring(0, 10) : '';
+    var execEnd = selectedParent ? (selectedParent.actualEndDate || '').substring(0, 10) : '';
+    
+    var validatedDaily = {};
+    var totalValidated = 0;
     issues.forEach(function(i) {
-        var d = (i.updated || i.created || '').substring(0, 10); // YYYY-MM-DD
-        if (d) dailyCount[d] = (dailyCount[d] || 0) + 1;
+        if (i.status === 'Validated') {
+            var d = '';
+            if (i.updated) {
+                d = i.updated.substring(0, 10);
+            } else if (i.created) {
+                d = i.created.substring(0, 10);
+            }
+            // Only count if within execution period
+            if (d && (!execStart || d >= execStart) && (!execEnd || d <= execEnd)) {
+                validatedDaily[d] = (validatedDaily[d] || 0) + 1;
+                totalValidated++;
+            }
+        }
     });
-    var sortedDates = Object.keys(dailyCount).sort();
+    
+    // Generate all dates in execution period for complete x-axis
+    var allDates = [];
+    if (execStart && execEnd) {
+        var current = new Date(execStart);
+        var end = new Date(execEnd);
+        while (current <= end) {
+            allDates.push(current.toISOString().substring(0, 10));
+            current.setDate(current.getDate() + 1);
+        }
+    } else {
+        allDates = Object.keys(validatedDaily).sort();
+    }
+    
+    // Fill in dates with 0 if no data
+    allDates.forEach(function(d) {
+        if (!validatedDaily[d]) validatedDaily[d] = 0;
+    });
+    var sortedDates = allDates.sort();
+    
+    // Calculate progress
+    var totalIssues = issues.length;
+    var progressPercent = totalIssues > 0 ? Math.round((totalValidated / totalIssues) * 100) : 0;
+    
     // If no data, show empty state
     if (sortedDates.length === 0) {
-        document.getElementById('owner-row').innerHTML = '<div class="chart-card chart-wide"><h3>📈 每日执行趋势</h3><p style="color:#999;text-align:center;">暂无数据</p></div>';
+        document.getElementById('owner-row').innerHTML = '<div class="chart-card chart-wide"><h3>📈 每日执行趋势</h3><p style="color:#999;text-align:center;">暂无已验证的测试用例</p></div>';
     } else {
-        // Aggregate by date (count of test cases updated that day)
+        // Aggregate by date (count of test cases validated that day)
         var trendCanvasId = 'trend-chart-' + (_pieChartCounter++);
         var trendHtml = '<div class="chart-card chart-wide">';
         trendHtml += '<h3>📈 每日执行趋势</h3>';
+        trendHtml += '<div style="margin-bottom:10px;font-size:13px;color:#666;">已验证: <span style="color:#27ae60;font-weight:bold;">' + totalValidated + '</span> / ' + totalIssues + ' (' + progressPercent + '%)</div>';
         trendHtml += '<div style="position:relative; height:200px;"><canvas id="' + trendCanvasId + '"></canvas></div>';
         trendHtml += '</div>';
         document.getElementById('owner-row').innerHTML = trendHtml;
@@ -818,7 +858,7 @@ function renderDistributions(issues) {
             canvasId: trendCanvasId,
             isTrend: true,
             labels: sortedDates,
-            data: sortedDates.map(function(d) { return dailyCount[d]; })
+            data: sortedDates.map(function(d) { return validatedDaily[d]; })
         });
     }
 }
@@ -2408,43 +2448,49 @@ function updatePlanDescription(planKey) {
         .then(function(llmResult) {
             if (llmResult.success && llmResult.data && llmResult.data.descriptions) {
                 var descMap = llmResult.data.descriptions;
-                // Only apply LLM descriptions to tasks that had NO original description
-                // Preserve original uploaded content for tasks that already had descriptions
-                var applied = 0;
-                var skipped = 0;
+                // Logic: 
+                // - Has original description → keep original + append LLM enhancement with test steps
+                // - No description → use LLM generated full description with test steps
+                var enhanced = 0;
+                var generated = 0;
                 tasks.forEach(function(t) {
                     if (descMap[t.key]) {
                         var origDesc = (t.description || '').trim();
-                        if (!origDesc) {
-                            // No original description → use LLM generated
-                            t.description = descMap[t.key];
-                            applied++;
+                        if (origDesc) {
+                            // Has original → keep original, append LLM enhancement
+                            t.description = origDesc + '\n\n' + descMap[t.key];
+                            enhanced++;
                         } else {
-                            // Has original description → keep it, skip LLM
-                            skipped++;
+                            // No description → use LLM generated
+                            t.description = descMap[t.key];
+                            generated++;
                         }
                     }
                 });
-                addLog('✅ LLM 处理完成: ' + applied + ' 条新生成, ' + skipped + ' 条保留原描述', 'ok');
+                addLog('✅ LLM 处理完成: ' + generated + ' 条新生成, ' + enhanced + ' 条增强补充', 'ok');
                 showLlmEvalStatus('loading', '正在将描述写回 JIRA...');
 
-                // Build filtered map: only tasks with new descriptions (no original content)
-                var filteredDescMap = {};
+                // Build map: ALL tasks that got LLM descriptions
+                var allDescMap = {};
                 tasks.forEach(function(t) {
-                    var origDesc = (t.description || '').trim();
-                    if (!origDesc && descMap[t.key]) {
-                        filteredDescMap[t.key] = descMap[t.key];
+                    if (descMap[t.key]) {
+                        allDescMap[t.key] = t.description;
                     }
                 });
 
-                // Write only new descriptions back to JIRA sub-tasks
+                if (Object.keys(allDescMap).length === 0) {
+                    addLog('ℹ️ 无描述需要更新', 'ok');
+                    return generateAndUploadDescription(tasks, planSummary, planKey);
+                }
+
+                // Write all updated descriptions back to JIRA sub-tasks
                 return fetch('/api/testcase/testplan/update-descriptions', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
                         'Authorization': 'Bearer ' + authToken
                     },
-                    body: JSON.stringify({ descriptions: filteredDescMap })
+                    body: JSON.stringify({ descriptions: allDescMap })
                 })
                 .then(function(r) { return r.json(); })
                 .then(function(updateResult) {
@@ -2478,18 +2524,51 @@ function updatePlanDescription(planKey) {
 
 function generateAndUploadDescription(tasks, planSummary, planKey) {
     // Categorize tasks by keywords in summary/description
-    var categories = [
-        { name: 'Protocol & Module 特性验证', keywords: ['protocol stack', 'protocol type', 'protocol format', 'link speed', 'link width', 'single module'] },
-        { name: 'LSM 验证', keywords: ['fdi lsm', 'rdi lsm', 'adapter sideband', 'physical ltsm'] },
-        { name: '复位机制验证', keywords: ['cold-rst', 'soft-rst'] },
-        { name: '数据通路验证', keywords: ['mainband', 'data path', 'datapath'] },
-        { name: '诊断能力验证', keywords: ['register dump', 'diag access', 'diag ', 'linkup'] },
-        { name: 'PMA 验证', keywords: ['pma loopback', 'internal loopback', 'loopback'] },
-        { name: 'Dual Die 验证', keywords: ['dual die'] },
-        { name: '稳定性测试', keywords: ['training status', 'dcl status', 'dcl config', 'power cycle', 'hot reset', 'reboot'] },
-        { name: 'HBM 测试', keywords: ['hbm', 'mc_phy', 'mc bist', 'training status', 'voltage', 'eye', 'pclk', 'diagnostic'] },
-        { name: 'PCIe 测试', keywords: ['pcie', 'link', 'bar', 'msi', 'intx', 'refclk', 'gen5', 'lane', 'polarity'] }
-    ];
+    // Dynamically select categories based on Test Plan type
+    var planLower = (planSummary || '').toLowerCase();
+    var categories;
+
+    if (planLower.indexOf('ethernet') !== -1 || planLower.indexOf('以太网') !== -1) {
+        // Ethernet test plan categories
+        categories = [
+            { name: 'PCB 验证', keywords: ['pcb', 'tdr', 'insertion loss', 'impedance'] },
+            { name: '基础测量', keywords: ['voltage', 'clock', 'reference clock', 'measurement'] },
+            { name: '固件与启动', keywords: ['firmware', 'boot', 'bringup', 'bring-up', 'memtest'] },
+            { name: 'Auto-Negotiation', keywords: ['auto-negotiation', 'an ', 'an-status', 'an+lt'] },
+            { name: 'Link Training', keywords: ['link training', 'serdes link', 'lt '] },
+            { name: 'Loopback 测试', keywords: ['loopback', 'nes', 'fep', 'tx2rx', 'rx2tx'] },
+            { name: 'RxEQ 测试', keywords: ['rxeq', 'rx eq', 'bert'] },
+            { name: 'A test', keywords: ['atest', 'a test', 'bu_atest'] }
+        ];
+    } else if (planLower.indexOf('hbm') !== -1) {
+        // HBM test plan categories
+        categories = [
+            { name: 'Protocol & Module 特性验证', keywords: ['protocol stack', 'protocol type', 'protocol format', 'link speed', 'link width', 'single module'] },
+            { name: 'LSM 验证', keywords: ['fdi lsm', 'rdi lsm', 'adapter sideband', 'physical ltsm'] },
+            { name: '复位机制验证', keywords: ['cold-rst', 'soft-rst'] },
+            { name: '数据通路验证', keywords: ['mainband', 'data path', 'datapath'] },
+            { name: '诊断能力验证', keywords: ['register dump', 'diag access', 'diag ', 'linkup'] },
+            { name: 'PMA 验证', keywords: ['pma loopback', 'internal loopback', 'loopback'] },
+            { name: 'Dual Die 验证', keywords: ['dual die'] },
+            { name: '稳定性测试', keywords: ['training status', 'dcl status', 'dcl config', 'power cycle', 'hot reset', 'reboot'] },
+            { name: 'HBM 测试', keywords: ['hbm', 'mc_phy', 'mc bist', 'training status', 'voltage', 'eye', 'pclk', 'diagnostic'] },
+            { name: 'PCIe 测试', keywords: ['pcie', 'link', 'bar', 'msi', 'intx', 'refclk', 'gen5', 'lane', 'polarity'] }
+        ];
+    } else {
+        // Default categories (UCIe/PCIe general)
+        categories = [
+            { name: 'Protocol & Module 特性验证', keywords: ['protocol stack', 'protocol type', 'protocol format', 'link speed', 'link width', 'single module'] },
+            { name: 'LSM 验证', keywords: ['fdi lsm', 'rdi lsm', 'adapter sideband', 'physical ltsm'] },
+            { name: '复位机制验证', keywords: ['cold-rst', 'soft-rst'] },
+            { name: '数据通路验证', keywords: ['mainband', 'data path', 'datapath'] },
+            { name: '诊断能力验证', keywords: ['register dump', 'diag access', 'diag ', 'linkup'] },
+            { name: 'PMA 验证', keywords: ['pma loopback', 'internal loopback', 'loopback'] },
+            { name: 'Dual Die 验证', keywords: ['dual die'] },
+            { name: '稳定性测试', keywords: ['training status', 'dcl status', 'dcl config', 'power cycle', 'hot reset', 'reboot'] },
+            { name: 'HBM 测试', keywords: ['hbm', 'mc_phy', 'mc bist', 'training status', 'voltage', 'eye', 'pclk', 'diagnostic'] },
+            { name: 'PCIe 测试', keywords: ['pcie', 'link', 'bar', 'msi', 'intx', 'refclk', 'gen5', 'lane', 'polarity'] }
+        ];
+    }
 
     var uncategorized = [];
     var categorized = {};
@@ -2706,23 +2785,47 @@ function saveDates() {
     statusEl.style.color = '#2563eb';
     statusEl.textContent = '正在保存到 JIRA...';
 
-    // Collect all issue keys: parent + linked sub-tasks
+    // Collect all issue keys: parent + linked sub-tasks + sub-tasks of linked plans
     var keys = [selectedParent.key];
     if (linkedPlans && linkedPlans.length > 0) {
         linkedPlans.forEach(function(p) { keys.push(p.key); });
     }
-
-    fetch('/api/testcase/batch-update-dates', {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'Authorization': 'Bearer ' + authToken
-        },
-        body: JSON.stringify({
-            keys: keys,
-            actualStartDate: startDate || null,
-            actualEndDate: endDate || null
-        })
+    
+    // Also fetch sub-tasks of each linked plan using search API
+    var fetchPromises = [];
+    if (linkedPlans && linkedPlans.length > 0) {
+        linkedPlans.forEach(function(p) {
+            fetchPromises.push(
+                fetch('/api/testcase/search?project=' + selectedParent.key.replace(/-.*/, '') + '&parent=' + p.key + '&maxResults=100', {
+                    credentials: 'same-origin',
+                    headers: authToken ? { 'Authorization': 'Bearer ' + authToken } : {}
+                })
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    if (data.success && data.data && data.data.issues) {
+                        data.data.issues.forEach(function(issue) {
+                            if (keys.indexOf(issue.key) === -1) keys.push(issue.key);
+                        });
+                    }
+                })
+                .catch(function() {})
+            );
+        });
+    }
+    
+    Promise.all(fetchPromises).then(function() {
+        return fetch('/api/testcase/batch-update-dates', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': 'Bearer ' + authToken
+            },
+            body: JSON.stringify({
+                keys: keys,
+                actualStartDate: startDate || null,
+                actualEndDate: endDate || null
+            })
+        });
     })
     .then(function(r) { return r.json(); })
     .then(function(data) {

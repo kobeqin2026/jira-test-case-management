@@ -20,8 +20,17 @@ sessions.setupGracefulShutdown();
 var app = express();
 var PORT = process.env.PORT || 3001;
 
+// Global error handlers to prevent crashes
+process.on('uncaughtException', function(err) {
+    console.error('[FATAL] Uncaught Exception:', err.message);
+    console.error(err.stack);
+});
+process.on('unhandledRejection', function(err) {
+    console.error('[FATAL] Unhandled Rejection:', err);
+});
+
 // Middleware
-app.use(express.json({ limit: '1mb' }));
+app.use(express.json({ limit: '5mb' }));
 app.use(cookieParser());
 app.use(express.static(path.join(__dirname, 'public')));
 

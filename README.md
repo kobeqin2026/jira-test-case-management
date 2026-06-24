@@ -10,7 +10,8 @@ JIRA 测试用例管理系统 — Test Plan / Task / Sub-task 全生命周期管
 - **Sub-task 详情**：点击 Test Plan 查看所有关联的 Sub-task，支持状态筛选和组件分布图表
 - **KPI 统计**：总用例数、进行中、已完成、阻塞等关键指标实时展示
 - **Chart.js 可视化**：组件分布饼图 + 状态分布柱状图
-- **设置执行日期**：为 Test Plan 及所有 Sub-task 批量设置 Actual Start Date / End Date
+- **设置执行日期**：为 Test Plan 及所有 Sub-task（包括 Sub Test Plan 下的 Sub-task）批量设置 Actual Start Date / End Date
+- **每日执行趋势**：统计执行日期范围内每天验证完成的测试用例数量，显示整体进度百分比
 
 ### 📤 批量上传（上传模式）
 - **自然语言创建**：通过 AI 对话式输入，自动解析为 JIRA Test Plan 和 Sub-task
@@ -22,8 +23,9 @@ JIRA 测试用例管理系统 — Test Plan / Task / Sub-task 全生命周期管
 
 ### 🧠 LLM 智能评估
 - **Test Plan 描述生成**：LLM 根据所有 Sub-task 自动生成 Test Plan 的专业描述
-- **Sub-task 描述增强**：对已有描述的 Sub-task，LLM 以硬件测试专家身份进行补充增强
-- **描述保护机制**：仅对无描述的 Sub-task 生成新描述，保留已上传的原始内容
+- **Sub-task 描述增强**：对已有描述的 Sub-task，LLM 以硬件测试专家身份补充测试目的和期望预期
+- **描述保护机制**：有原始描述时保留原内容并追加 LLM 增强，无描述时生成完整描述
+- **智能分类**：根据 Test Plan 类型（Ethernet/HBM/PCIe）自动选择合适的分类关键词
 - **实时进度反馈**：评估过程中实时显示已等待时间，完成后显示总耗时
 - **并行写入优化**：JIRA 描述更新采用5并发并行写入，大幅提升速度
 
@@ -82,8 +84,8 @@ JIRA_BASE_URL=https://jira01.birentech.com
 JIRA_PAT=your_jira_pat_here
 
 # LLM 配置
-BAILIAN_API_KEY=your_llm_api_key
-BAILIAN_BASE_URL=https://your-llm-endpoint/v1
+BAILIAN_API_KEY=your_api_key_here
+BAILIAN_BASE_URL=https://aiapiidc.birentech.com/v1
 BAILIAN_MODEL=br-qwen3
 
 # 系统配置
@@ -140,7 +142,7 @@ jira-testcase-manager/
 ├── public/
 │   ├── jira-test-case-management.html  # 主页面
 │   └── js/
-│       └── testcase-upload.js          # 前端核心逻辑（~2700行）
+│       └── testcase-upload.js          # 前端核心逻辑（~2800行）
 ├── deploy.sh                 # 部署脚本
 └── data/                     # 运行时数据（不纳入版本管理）
     ├── sessions.json
@@ -192,6 +194,22 @@ jira-testcase-manager/
 | admin | admin123 | 管理员 |
 
 ## 版本历史
+
+### v1.2.0 (2026-06-24)
+- ✅ Test Case 库浏览（项目选择 → Test Plan → Sub-task 详情）
+- ✅ KPI 统计仪表板（总计/进行中/已完成/阻塞）
+- ✅ Chart.js 组件分布饼图 + 状态分布柱状图
+- ✅ 批量上传（自然语言 AI 创建 + CSV 模板上传）
+- ✅ LLM 智能评估（Test Plan 描述生成 + Sub-task 描述增强）
+- ✅ 描述保护机制（保留已上传的原始内容，LLM 补充测试目的和期望预期）
+- ✅ 智能分类（根据 Test Plan 类型自动选择 Ethernet/HBM/PCIe 分类）
+- ✅ 实时耗时反馈（评估进度 + 完成耗时显示）
+- ✅ 批量设置执行日期（Actual Start/End Date，包含 Sub Test Plan 下的 Sub-task）
+- ✅ 每日执行趋势（统计执行日期范围内每天验证完成的数量）
+- ✅ 多用户管理 + JIRA PAT 独立配置
+- ✅ 并行 JIRA 写入优化（5并发）
+- ✅ PM2 + Nginx 部署方案
+- ✅ 全局错误处理 + 服务器稳定性优化
 
 ### v1.0.0 (2026-06-23)
 - ✅ Test Case 库浏览（项目选择 → Test Plan → Sub-task 详情）

@@ -496,7 +496,7 @@ router.get('/search', auth.authenticateToken, async function(req, res) {
         var apiPath = '/rest/api/2/search?jql=' + encodeURIComponent(jql)
             + '&startAt=' + startAt
             + '&maxResults=' + maxResults
-            + '&fields=summary,status,assignee,priority,issuetype,created,updated,labels,description,components';
+            + '&fields=summary,status,assignee,priority,issuetype,created,updated,labels,description,components,customfield_10302,customfield_10303';
 
         var result = await jiraRequest('GET', apiPath, null, userPat);
         var issues = result.issues.map(function(issue) {
@@ -513,6 +513,8 @@ router.get('/search', auth.authenticateToken, async function(req, res) {
                 components: (issue.fields.components || []).map(function(c) { return c.name || c; }),
                 created: issue.fields.created,
                 updated: issue.fields.updated,
+                actualStartDate: issue.fields.customfield_10303 || '',
+                actualEndDate: issue.fields.customfield_10302 || '',
                 url: jiraConfig.baseUrl + '/browse/' + issue.key,
                 parent: issue.fields.parent ? { key: issue.fields.parent.key, summary: issue.fields.parent.fields ? issue.fields.parent.fields.summary : '' } : null
             };
@@ -936,18 +938,18 @@ router.post('/testplan/llm-evaluate', auth.authenticateToken, async function(req
 
         if (mode === 'generate_descriptions') {
             // Mode: Generate/enhance descriptions for tasks
-            systemPrompt = '你是一位资深的硬件测试专家，专注于GPU/UCIe/PCIe/HBM高速接口芯片的验证与测试。' +
-                '你需要处理测试用例的描述：' +
-                '1. 如果测试用例没有描述(显示为"无描述")，根据标题(Summary)生成专业的测试描述，包含测试目的、测试方法、预期结果。' +
-                '2. 如果测试用例已有描述，以硬件测试专家身份进行补充增强，使描述更完整专业，但保留原有内容的核心意思。' +
+            systemPrompt = '你是一位资深的硬件测试专家，专注于GPU/UCIe/PCIe/HBM/Ethernet高速接口芯片的验证与测试。' +
+                '你需要为测试用例补充完善描述：' +
+                '1. 如果测试用例没有描述，根据标题生成专业描述，包含测试目的和期望预期。' +
+                '2. 如果测试用例已有描述，保留原有内容，在其基础上补充测试目的和期望预期。' +
                 '请返回JSON格式：{"descriptions": {"BR200-xxx": "描述1", "BR200-yyy": "描述2"}}' +
-                '返回所有测试用例的描述（包括新生成的和增强后的）。' +
-                '使用中文，描述简洁专业，每条控制在120字以内。';
+                '注意：JSON的key必须是issue key（如BR200-315），不是完整标题。' +
+                '返回所有测试用例的描述。使用中文，描述简洁专业。';
 
             userPrompt = 'Test Plan: ' + planKey + ' - ' + planSummary + '\n\n';
             userPrompt += '测试用例列表（共 ' + tasks.length + ' 项）：\n';
             userPrompt += taskList + '\n\n';
-            userPrompt += '请处理上面所有测试用例的描述：没有描述的生成新描述，已有描述的以硬件测试专家身份进行补充增强。';
+            userPrompt += '请为上面所有测试用例补充测试目的和期望预期。已有描述的保留原内容并补充，没有描述的生成完整描述。';
 
             console.log('[TestCase-LLMEval] Generating descriptions for:', planKey, 'tasks:', tasks.length);
         } else {
@@ -983,7 +985,7 @@ router.post('/testplan/llm-evaluate', auth.authenticateToken, async function(req
                     { role: 'user', content: userPrompt }
                 ],
                 temperature: 0.4,
-                max_tokens: mode === 'generate_descriptions' ? 2000 : 1000
+                max_tokens: mode === 'generate_descriptions' ? 4000 : 1000
             }),
             signal: AbortSignal.timeout(300000)
         });
@@ -1010,12 +1012,22 @@ router.post('/testplan/llm-evaluate', auth.authenticateToken, async function(req
             var parsed = null;
             try { parsed = JSON.parse(llmContent); } catch (_) {}
             if (!parsed) {
-                var stripped = llmContent.replace(/^```(?:json)?\\s*/i, '').replace(/```\\s*$/i, '').trim();
+                // Strip markdown code blocks more aggressively
+                var stripped = llmContent.replace(/```json\s*/gi, '').replace(/```\s*/gi, '').trim();
                 try { parsed = JSON.parse(stripped); } catch (_) {}
             }
             if (!parsed) {
                 var match = llmContent.match(/\{[\s\S]*\}/);
                 if (match) { try { parsed = JSON.parse(match[0]); } catch (_) {} }
+            }
+            if (!parsed) {
+                console.log('[TestCase-LLMEval] Parse failed. Content starts with:', llmContent.substring(0, 80));
+                console.log('[TestCase-LLMEval] Content ends with:', llmContent.substring(llmContent.length - 80));
+                // Try aggressive JSON extraction
+                var jsonMatch = llmContent.match(/\{[\s\S]*"descriptions"[\s\S]*\}/);
+                if (jsonMatch) {
+                    try { parsed = JSON.parse(jsonMatch[0]); console.log('[TestCase-LLMEval] Aggressive parse OK'); } catch(e) { console.log('[TestCase-LLMEval] Aggressive parse error:', e.message); }
+                }
             }
             var descriptions = (parsed && parsed.descriptions) ? parsed.descriptions : {};
             var totalTime = ((Date.now() - startTime) / 1000).toFixed(1);
