@@ -196,33 +196,24 @@ jira-testcase-manager/
 ## 版本历史
 
 ### v1.2.0 (2026-06-24)
-- ✅ Test Case 库浏览（项目选择 → Test Plan → Sub-task 详情）
-- ✅ KPI 统计仪表板（总计/进行中/已完成/阻塞）
-- ✅ Chart.js 组件分布饼图 + 状态分布柱状图
-- ✅ 批量上传（自然语言 AI 创建 + CSV 模板上传）
-- ✅ LLM 智能评估（Test Plan 描述生成 + Sub-task 描述增强）
-- ✅ 描述保护机制（保留已上传的原始内容，LLM 补充测试目的和期望预期）
-- ✅ 智能分类（根据 Test Plan 类型自动选择 Ethernet/HBM/PCIe 分类）
-- ✅ 实时耗时反馈（评估进度 + 完成耗时显示）
-- ✅ 批量设置执行日期（Actual Start/End Date，包含 Sub Test Plan 下的 Sub-task）
-- ✅ 每日执行趋势（统计执行日期范围内每天验证完成的数量）
-- ✅ 多用户管理 + JIRA PAT 独立配置
-- ✅ 并行 JIRA 写入优化（5并发）
-- ✅ PM2 + Nginx 部署方案
-- ✅ 全局错误处理 + 服务器稳定性优化
+基于 v1.0.0 新增以下功能：
+- **LLM描述增强优化**：保留原始描述，补充测试目的和期望预期
+- **智能分类**：根据 Test Plan 类型（Ethernet/HBM/PCIe）自动选择分类关键词
+- **执行日期批量设置**：覆盖 Sub Test Plan 及其下所有 Sub-task
+- **每日执行趋势**：统计执行日期范围内每天验证完成的测试用例数量和进度百分比
+- **服务器稳定性**：全局错误处理、JSON body限制提升至5MB、LLM响应解析优化
 
 ### v1.0.0 (2026-06-23)
-- ✅ Test Case 库浏览（项目选择 → Test Plan → Sub-task 详情）
-- ✅ KPI 统计仪表板（总计/进行中/已完成/阻塞）
-- ✅ Chart.js 组件分布饼图 + 状态分布柱状图
-- ✅ 批量上传（自然语言 AI 创建 + CSV 模板上传）
-- ✅ LLM 智能评估（Test Plan 描述生成 + Sub-task 描述增强）
-- ✅ 描述保护机制（保留已上传的原始内容）
-- ✅ 实时耗时反馈（评估进度 + 完成耗时显示）
-- ✅ 批量设置执行日期（Actual Start/End Date）
-- ✅ 多用户管理 + JIRA PAT 独立配置
-- ✅ 并行 JIRA 写入优化（5并发）
-- ✅ PM2 + Nginx 部署方案
+- Test Case 库浏览（项目选择 → Test Plan → Sub-task 详情）
+- KPI 统计仪表板 + Chart.js 可视化
+- 批量上传（自然语言 AI 创建 + CSV 模板上传）
+- LLM 智能评估（Test Plan 描述生成 + Sub-task 描述增强）
+- 描述保护机制（保留已上传的原始内容）
+- 实时耗时反馈
+- 批量设置执行日期（Actual Start/End Date）
+- 多用户管理 + JIRA PAT 独立配置
+- 并行 JIRA 写入优化（5并发）
+- PM2 + Nginx 部署方案
 
 ## License
 
