@@ -564,7 +564,7 @@
                     <div class="ai-examples" style="margin-bottom:12px;">
                         <span style="font-size:12px; color:#999;">快捷指令：</span>
                         <button class="btn btn-outline btn-sm" onclick="fillCommand('创建1个sub test plan')">➕ 新建Sub Test Plan</button>
-                        <button class="btn btn-outline btn-sm" onclick="fillCommand('在当前Test Plan下创建测试用例,负责人为')">📋 批量创建测试用例</button>
+                        <button class="btn btn-outline btn-sm" onclick="showCreateTestCasesDialog()">📋 批量创建测试用例</button>
                         <button class="btn btn-outline btn-sm" onclick="fillCommand('创建3个sub test plan')">➕ 批量新建Sub Test Plan</button>
                     </div>
                     <div class="ai-status" id="ai-status"></div>
@@ -633,6 +633,27 @@
                 </div>
             </div>
         </div>
+<!-- Create Test Cases Dialog -->
+    <div class="login-overlay" id="create-tc-modal" style="display:none;">
+        <div class="login-box" style="width:420px;">
+            <h2>📋 批量创建测试用例</h2>
+            <p style="font-size:13px; color:#666; margin-bottom:16px;">请填写负责人和组件信息</p>
+            <div style="margin-bottom:12px;">
+                <label style="display:block; font-size:13px; font-weight:600; color:#555; margin-bottom:4px;">负责人 *</label>
+                <input type="text" id="tc-dialog-assignee" placeholder="JIRA用户名或姓名" style="width:100%; padding:8px; border:1px solid #ddd; border-radius:4px; font-size:13px;" />
+            </div>
+            <div style="margin-bottom:16px;">
+                <label style="display:block; font-size:13px; font-weight:600; color:#555; margin-bottom:4px;">组件</label>
+                <select id="tc-dialog-component" style="width:100%; padding:8px; border:1px solid #ddd; border-radius:4px; font-size:13px;">
+                    <option value="">-- 选择组件 --</option>
+                </select>
+            </div>
+            <div style="display:flex; gap:8px; justify-content:flex-end;">
+                <button class="btn btn-outline" onclick="closeCreateTestCasesDialog()">取消</button>
+                <button class="btn btn-primary" onclick="confirmCreateTestCases()">确认创建</button>
+            </div>
+        </div>
+    </div>
 <!-- Date Setting Modal -->
     <div class="login-overlay" id="date-modal" style="display:none;">
         <div class="login-box" style="width:420px;">
@@ -701,6 +722,6 @@
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
-    <script src="/js/testcase-upload.js?v=26"></script>
+    <script src="/js/testcase-upload.js?v=34"></script>
 </body>
 </html>

@@ -290,9 +290,15 @@ router.post('/batch-create', auth.authenticateToken, async function(req, res) {
                             var searchResult = await jiraRequest('GET', '/rest/api/2/user/search?username=' + encodeURIComponent(assigneeName), null, userPat);
                             if (searchResult && searchResult.length > 0) {
                                 // Find match - check if all search words appear in displayName
-                                var searchWords = assigneeName.toLowerCase().split(/\s+/);
+                                var searchWords = assigneeName.toLowerCase().split(/\s+/).filter(function(w) { return w.length > 1; });
                                 for (var u = 0; u < searchResult.length; u++) {
                                     var displayName = (searchResult[u].displayName || '').toLowerCase();
+                                    // Skip single-char words for matching
+                                    if (searchWords.length === 0) {
+                                        // All words were single chars, just use first result
+                                        assigneeName = searchResult[u].name;
+                                        break;
+                                    }
                                     var allWordsMatch = searchWords.every(function(w) { return displayName.indexOf(w) !== -1; });
                                     if (allWordsMatch) {
                                         assigneeName = searchResult[u].name;
@@ -323,6 +329,14 @@ router.post('/batch-create', auth.authenticateToken, async function(req, res) {
                             issueBody.fields.parent = { key: parentKey };
                         }
                         // For Test Plan / Task etc, we'll add issuelinks after creation
+                    }
+                }
+
+                // Set components if provided
+                if (issue.components) {
+                    var compNames = Array.isArray(issue.components) ? issue.components : issue.components.split(/[;,，]/).map(function(c) { return c.trim(); }).filter(Boolean);
+                    if (compNames.length > 0) {
+                        issueBody.fields.components = compNames.map(function(c) { return { name: c }; });
                     }
                 }
 
@@ -928,17 +942,73 @@ router.post('/testplan/llm-evaluate', auth.authenticateToken, async function(req
             return res.status(500).json({ success: false, error: 'LLM API not configured (BAILIAN_API_KEY missing)' });
         }
 
-        // Build task list for LLM context
-        var taskList = tasks.map(function(t, i) {
-            var desc = (t.description || '').substring(0, 200);
-            return (i + 1) + '. [' + t.key + '] ' + (t.summary || '') + (desc ? ' — ' + desc : ' (无描述)') + ' [' + (t.status || 'N/A') + '] [' + (t.priority || 'N/A') + ']';
-        }).join('\n');
+        var cleanUrl = BASE_URL.replace(/\/+$/, '');
+        var apiUrl = cleanUrl + '/chat/completions';
 
-        var systemPrompt, userPrompt;
+        function buildTaskListForBatch(batchTasks, startIndex) {
+            return batchTasks.map(function(t, i) {
+                var desc = (t.description || '').substring(0, 150);
+                return (startIndex + i + 1) + '. [' + t.key + '] ' + (t.summary || '') + (desc ? ' — ' + desc : ' (无描述)');
+            }).join('\n');
+        }
+
+        async function callLLM(systemPrompt, userPrompt, maxTokens) {
+            var response = await fetch(apiUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + API_KEY },
+                body: JSON.stringify({
+                    model: MODEL,
+                    messages: [
+                        { role: 'system', content: systemPrompt },
+                        { role: 'user', content: userPrompt }
+                    ],
+                    temperature: 0.4,
+                    max_tokens: maxTokens
+                }),
+                signal: AbortSignal.timeout(300000)
+            });
+            var data = await response.text();
+            var json = JSON.parse(data);
+            if (json.error) {
+                throw new Error(json.error.message || 'LLM API error');
+            }
+            var content = json.choices && json.choices[0] && json.choices[0].message && json.choices[0].message.content;
+            if (!content) {
+                throw new Error('LLM returned empty response');
+            }
+            return content;
+        }
+
+        function parseDescriptions(llmContent) {
+            var parsed = null;
+            try { parsed = JSON.parse(llmContent); } catch (_) {}
+            if (!parsed) {
+                var stripped = llmContent.replace(/```json\s*/gi, '').replace(/```\s*/gi, '').trim();
+                try { parsed = JSON.parse(stripped); } catch (_) {}
+            }
+            if (!parsed) {
+                var match = llmContent.match(/\{[\s\S]*\}/);
+                if (match) { try { parsed = JSON.parse(match[0]); } catch (_) {} }
+            }
+            if (!parsed) {
+                var jsonMatch = llmContent.match(/\{[\s\S]*"descriptions"[\s\S]*\}/);
+                if (jsonMatch) {
+                    try { parsed = JSON.parse(jsonMatch[0]); } catch(e) { console.log('[TestCase-LLMEval] Aggressive parse error:', e.message); }
+                }
+            }
+            return (parsed && parsed.descriptions) ? parsed.descriptions : {};
+        }
 
         if (mode === 'generate_descriptions') {
-            // Mode: Generate/enhance descriptions for tasks
-            systemPrompt = '你是一位资深的硬件测试专家，专注于GPU/UCIe/PCIe/HBM/Ethernet高速接口芯片的验证与测试。' +
+            // Batch processing: split tasks into groups, 2 concurrent batches
+            var BATCH_SIZE = 30;
+            var CONCURRENCY = 2;
+            var allDescriptions = {};
+            var totalBatches = Math.ceil(tasks.length / BATCH_SIZE);
+
+            console.log('[TestCase-LLMEval] Generating descriptions for:', planKey, 'tasks:', tasks.length, 'batches:', totalBatches, 'concurrency:', CONCURRENCY);
+
+            var descSystemPrompt = '你是一位资深的硬件测试专家，专注于GPU/UCIe/PCIe/HBM/Ethernet高速接口芯片的验证与测试。' +
                 '你需要为测试用例补充完善描述：' +
                 '1. 如果测试用例没有描述，根据标题生成专业描述，包含测试目的和期望预期。' +
                 '2. 如果测试用例已有描述，保留原有内容，在其基础上补充测试目的和期望预期。' +
@@ -946,15 +1016,55 @@ router.post('/testplan/llm-evaluate', auth.authenticateToken, async function(req
                 '注意：JSON的key必须是issue key（如BR200-315），不是完整标题。' +
                 '返回所有测试用例的描述。使用中文，描述简洁专业。';
 
-            userPrompt = 'Test Plan: ' + planKey + ' - ' + planSummary + '\n\n';
-            userPrompt += '测试用例列表（共 ' + tasks.length + ' 项）：\n';
-            userPrompt += taskList + '\n\n';
-            userPrompt += '请为上面所有测试用例补充测试目的和期望预期。已有描述的保留原内容并补充，没有描述的生成完整描述。';
+            function buildBatchPrompt(b) {
+                var batchStart = b * BATCH_SIZE;
+                var batchEnd = Math.min(batchStart + BATCH_SIZE, tasks.length);
+                var batchTasks = tasks.slice(batchStart, batchEnd);
+                var batchTaskList = buildTaskListForBatch(batchTasks, batchStart);
 
-            console.log('[TestCase-LLMEval] Generating descriptions for:', planKey, 'tasks:', tasks.length);
+                var batchUserPrompt = 'Test Plan: ' + planKey + ' - ' + planSummary + '\n\n';
+                batchUserPrompt += '测试用例列表（共 ' + tasks.length + ' 项，本批 ' + (b + 1) + '/' + totalBatches + '，第 ' + (batchStart + 1) + '-' + batchEnd + ' 项）：\n';
+                batchUserPrompt += batchTaskList + '\n\n';
+                batchUserPrompt += '请为上面本批测试用例补充测试目的和期望预期。已有描述的保留原内容并补充，没有描述的生成完整描述。';
+                return batchUserPrompt;
+            }
+
+            async function processBatch(b) {
+                var batchStart2 = Date.now();
+                var batchUserPrompt = buildBatchPrompt(b);
+                console.log('[TestCase-LLMEval] Batch ' + (b + 1) + '/' + totalBatches + ' start');
+                var llmContent = await callLLM(descSystemPrompt, batchUserPrompt, 4000);
+                var batchTime = ((Date.now() - batchStart2) / 1000).toFixed(1);
+                console.log('[TestCase-LLMEval] Batch ' + (b + 1) + '/' + totalBatches + ' done in', batchTime, 's');
+                var batchDescs = parseDescriptions(llmContent);
+                console.log('[TestCase-LLMEval] Batch ' + (b + 1) + ' parsed:', Object.keys(batchDescs).length, 'descriptions');
+                return batchDescs;
+            }
+
+            // Process batches with concurrency control
+            for (var i = 0; i < totalBatches; i += CONCURRENCY) {
+                var batchGroup = [];
+                for (var j = i; j < Math.min(i + CONCURRENCY, totalBatches); j++) {
+                    batchGroup.push(processBatch(j));
+                }
+                var groupResults = await Promise.all(batchGroup);
+                groupResults.forEach(function(batchDescs) {
+                    Object.assign(allDescriptions, batchDescs);
+                });
+                console.log('[TestCase-LLMEval] Group done, total descriptions so far:', Object.keys(allDescriptions).length);
+            }
+
+            var totalTime = ((Date.now() - startTime) / 1000).toFixed(1);
+            console.log('[TestCase-LLMEval] All done in', totalTime, 's, total descriptions:', Object.keys(allDescriptions).length);
+            res.json({ success: true, data: { descriptions: allDescriptions, batchCount: totalBatches, concurrency: CONCURRENCY } });
         } else {
-            // Mode: Evaluate test plan as hardware testing expert
-            systemPrompt = '你是一位资深的硬件测试专家，专注于GPU/UCIe/PCIe/HBM高速接口芯片的验证与测试。' +
+            // Mode: Evaluate test plan as hardware testing expert (single call)
+            var taskList = tasks.map(function(t, i) {
+                var desc = (t.description || '').substring(0, 200);
+                return (i + 1) + '. [' + t.key + '] ' + (t.summary || '') + (desc ? ' — ' + desc : ' (无描述)') + ' [' + (t.status || 'N/A') + '] [' + (t.priority || 'N/A') + ']';
+            }).join('\n');
+
+            var evalSystemPrompt = '你是一位资深的硬件测试专家，专注于GPU/UCIe/PCIe/HBM高速接口芯片的验证与测试。' +
                 '你擅长分析测试计划的完整性、覆盖度和风险点。' +
                 '请根据提供的测试用例列表，给出专业的评估意见。' +
                 '评估内容包括：' +
@@ -965,75 +1075,14 @@ router.post('/testplan/llm-evaluate', auth.authenticateToken, async function(req
                 '请用中文回答，格式清晰，使用JIRA wiki markup格式（h3. 标题，*加粗*，- 列表等）。' +
                 '保持简洁专业，控制在300字以内。';
 
-            userPrompt = 'Test Plan: ' + planKey + ' - ' + planSummary + '\n\n';
-            userPrompt += '测试用例列表（共 ' + tasks.length + ' 项）：\n';
-            userPrompt += taskList;
+            var evalUserPrompt = 'Test Plan: ' + planKey + ' - ' + planSummary + '\n\n';
+            evalUserPrompt += '测试用例列表（共 ' + tasks.length + ' 项）：\n';
+            evalUserPrompt += taskList;
 
             console.log('[TestCase-LLMEval] Evaluating plan:', planKey, 'tasks:', tasks.length);
-        }
 
-        var cleanUrl = BASE_URL.replace(/\/+$/, '');
-        var apiUrl = cleanUrl + '/chat/completions';
+            var llmContent = await callLLM(evalSystemPrompt, evalUserPrompt, 1000);
 
-        var response = await fetch(apiUrl, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + API_KEY },
-            body: JSON.stringify({
-                model: MODEL,
-                messages: [
-                    { role: 'system', content: systemPrompt },
-                    { role: 'user', content: userPrompt }
-                ],
-                temperature: 0.4,
-                max_tokens: mode === 'generate_descriptions' ? 4000 : 1000
-            }),
-            signal: AbortSignal.timeout(300000)
-        });
-
-        var llmTime = ((Date.now() - startTime) / 1000).toFixed(1);
-        console.log('[TestCase-LLMEval] LLM API responded in', llmTime, 's, status:', response.status);
-
-        var data = await response.text();
-        var json = JSON.parse(data);
-
-        if (json.error) {
-            return res.status(500).json({ success: false, error: json.error.message || 'LLM API error' });
-        }
-
-        var llmContent = json.choices && json.choices[0] && json.choices[0].message && json.choices[0].message.content;
-        if (!llmContent) {
-            return res.status(500).json({ success: false, error: 'LLM returned empty response' });
-        }
-
-        console.log('[TestCase-LLMEval] LLM response length:', llmContent.length);
-
-        if (mode === 'generate_descriptions') {
-            // Parse JSON response for descriptions
-            var parsed = null;
-            try { parsed = JSON.parse(llmContent); } catch (_) {}
-            if (!parsed) {
-                // Strip markdown code blocks more aggressively
-                var stripped = llmContent.replace(/```json\s*/gi, '').replace(/```\s*/gi, '').trim();
-                try { parsed = JSON.parse(stripped); } catch (_) {}
-            }
-            if (!parsed) {
-                var match = llmContent.match(/\{[\s\S]*\}/);
-                if (match) { try { parsed = JSON.parse(match[0]); } catch (_) {} }
-            }
-            if (!parsed) {
-                console.log('[TestCase-LLMEval] Parse failed. Content starts with:', llmContent.substring(0, 80));
-                console.log('[TestCase-LLMEval] Content ends with:', llmContent.substring(llmContent.length - 80));
-                // Try aggressive JSON extraction
-                var jsonMatch = llmContent.match(/\{[\s\S]*"descriptions"[\s\S]*\}/);
-                if (jsonMatch) {
-                    try { parsed = JSON.parse(jsonMatch[0]); console.log('[TestCase-LLMEval] Aggressive parse OK'); } catch(e) { console.log('[TestCase-LLMEval] Aggressive parse error:', e.message); }
-                }
-            }
-            var descriptions = (parsed && parsed.descriptions) ? parsed.descriptions : {};
-            var totalTime = ((Date.now() - startTime) / 1000).toFixed(1);
-            console.log('[TestCase-LLMEval] Completed in', totalTime, 's, descriptions:', Object.keys(descriptions).length);
-            res.json({ success: true, data: { descriptions: descriptions } });
-        } else {
             var totalTime = ((Date.now() - startTime) / 1000).toFixed(1);
             console.log('[TestCase-LLMEval] Completed in', totalTime, 's');
             res.json({ success: true, data: { evaluation: llmContent } });
@@ -1091,6 +1140,58 @@ router.post('/testplan/update-descriptions', auth.authenticateToken, async funct
         });
     } catch (error) {
         console.error('[TestCase] Batch update descriptions error:', error.message);
+        console.error('[TestCase] Error stack:', error.stack);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+
+/**
+ * GET /api/testcase/search-user?name=XXX
+ * Search JIRA users by name
+ */
+router.get('/search-user', auth.authenticateToken, async function(req, res) {
+    try {
+        var name = req.query.name || '';
+        if (!name) {
+            return res.json({ success: true, data: { users: [] } });
+        }
+
+        var userPat = req.user.jiraPat || '';
+        var searchResult = await jiraRequest('GET', '/rest/api/2/user/search?username=' + encodeURIComponent(name), null, userPat);
+        
+        var users = (searchResult || []).map(function(u) {
+            return {
+                name: u.name,
+                displayName: u.displayName || '',
+                emailAddress: u.emailAddress || ''
+            };
+        });
+
+        // If search returns results, try to find best match
+        var bestMatch = null;
+        if (users.length > 0) {
+            var searchWords = name.toLowerCase().split(/\s+/).filter(function(w) { return w.length > 1; });
+            for (var i = 0; i < users.length; i++) {
+                var displayName = users[i].displayName.toLowerCase();
+                if (searchWords.length === 0) {
+                    bestMatch = users[i];
+                    break;
+                }
+                var allWordsMatch = searchWords.every(function(w) { return displayName.indexOf(w) !== -1; });
+                if (allWordsMatch) {
+                    bestMatch = users[i];
+                    break;
+                }
+            }
+            if (!bestMatch && users.length > 0) {
+                bestMatch = users[0];
+            }
+        }
+
+        res.json({ success: true, data: { users: users, bestMatch: bestMatch } });
+    } catch (error) {
+        console.error('[TestCase] Search user error:', error.message);
         res.status(500).json({ success: false, error: error.message });
     }
 });
@@ -1249,6 +1350,57 @@ router.post('/batch-update-dates', auth.authenticateToken, async function(req, r
         });
     } catch (error) {
         console.error('[TestCase] Batch update dates error:', error.message);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+
+/**
+ * GET /api/testcase/search-user?name=XXX
+ * Search JIRA users by name
+ */
+router.get('/search-user', auth.authenticateToken, async function(req, res) {
+    try {
+        var name = req.query.name || '';
+        if (!name) {
+            return res.json({ success: true, data: { users: [] } });
+        }
+
+        var userPat = req.user.jiraPat || '';
+        var searchResult = await jiraRequest('GET', '/rest/api/2/user/search?username=' + encodeURIComponent(name), null, userPat);
+        
+        var users = (searchResult || []).map(function(u) {
+            return {
+                name: u.name,
+                displayName: u.displayName || '',
+                emailAddress: u.emailAddress || ''
+            };
+        });
+
+        // If search returns results, try to find best match
+        var bestMatch = null;
+        if (users.length > 0) {
+            var searchWords = name.toLowerCase().split(/\s+/).filter(function(w) { return w.length > 1; });
+            for (var i = 0; i < users.length; i++) {
+                var displayName = users[i].displayName.toLowerCase();
+                if (searchWords.length === 0) {
+                    bestMatch = users[i];
+                    break;
+                }
+                var allWordsMatch = searchWords.every(function(w) { return displayName.indexOf(w) !== -1; });
+                if (allWordsMatch) {
+                    bestMatch = users[i];
+                    break;
+                }
+            }
+            if (!bestMatch && users.length > 0) {
+                bestMatch = users[0];
+            }
+        }
+
+        res.json({ success: true, data: { users: users, bestMatch: bestMatch } });
+    } catch (error) {
+        console.error('[TestCase] Search user error:', error.message);
         res.status(500).json({ success: false, error: error.message });
     }
 });

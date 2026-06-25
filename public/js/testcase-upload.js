@@ -1879,6 +1879,8 @@ function createTestPlan() {
 // ============ Natural Language Command ============
 
 var aiGeneratedIssues = [];
+var _dialogAssignee = '';
+var _dialogComponent = '';
 
 function fillCommand(text) {
     document.getElementById('ai-prompt').value = text;
@@ -1888,6 +1890,9 @@ function fillCommand(text) {
 var aiPromptEl = document.getElementById('ai-prompt');
 if (aiPromptEl) {
     aiPromptEl.addEventListener('paste', function(e) {
+        // Prevent default paste to avoid duplication
+        e.preventDefault();
+        
         var text = (e.clipboardData || window.clipboardData).getData('text');
         if (!text) return;
 
@@ -1943,20 +1948,29 @@ if (aiPromptEl) {
                 priority: priority,
                 labels: '',
                 parentKey: uploadSelectedPlanKey || '',
-                assignee: ''
+                assignee: '',
+                components: ''
             });
         }
     }); // end lines.forEach
 
     if (issues.length > 0) {
-        // APPEND to existing text (don't overwrite)
+        // Preserve assignee/component from existing text, then add pasted data
         var textarea = document.getElementById('ai-prompt');
         var existing = textarea.value.trim();
-        if (existing) {
-            textarea.value = existing + '\n' + text;
-        } else {
-            textarea.value = text;
+        var preservedCmd = '';
+        
+        // Extract assignee and component from existing command
+        var assigneeMatch = existing.match(/负责人[为是:：]\s*(.+?)(?:[,，]|$)/);
+        var compMatch = existing.match(/组件[为是:：]\s*(.+?)(?:[,，]|$)/);
+        if (assigneeMatch || compMatch) {
+            preservedCmd = '在当前Test Plan下创建测试用例';
+            if (assigneeMatch) preservedCmd += ',负责人为' + assigneeMatch[1].trim();
+            if (compMatch) preservedCmd += ',组件为' + compMatch[1].trim();
         }
+        
+        // Set text: preserved command + pasted data
+        textarea.value = preservedCmd ? preservedCmd + '\n' + text : text;
         window._pendingPasteIssues = issues;
         var statusEl = document.getElementById('ai-status');
         statusEl.className = 'ai-status success';
@@ -1967,6 +1981,31 @@ if (aiPromptEl) {
 });
 } // end if (aiPromptEl)
 
+
+// ============ JIRA User Match ============
+function matchJiraUser(name) {
+    return new Promise(function(resolve) {
+        if (!name || name.match(/^E\d+$/)) {
+            resolve(name);
+            return;
+        }
+        var project = document.getElementById('tc-project').value || 'BR200';
+        fetch('/api/testcase/search?project=' + project + '&maxResults=100', {
+            credentials: 'same-origin',
+            headers: authToken ? { 'Authorization': 'Bearer ' + authToken } : {}
+        })
+        .then(function(r) { return r.json(); })
+        .then(function() {
+            // Use the backend's user search via a direct approach
+            // For now, just return the original name - backend will handle matching
+            resolve(name);
+        })
+        .catch(function() {
+            resolve(name);
+        });
+    });
+}
+
 function generateWithAI() {
     // Check if there's pending paste data
     if (window._pendingPasteIssues && window._pendingPasteIssues.length > 0) {
@@ -1974,23 +2013,42 @@ function generateWithAI() {
         
         // Search entire text for assignee (e.g., "负责人为Cao Xianjie" or "负责人为E01860")
         var assignee = '';
-        var assigneeMatch = command.match(/负责人[为是:：]\s*(.+)/);
+        var assigneeMatch = command.match(/负责人[为是:：]\s*(.+?)(?:[,，]|$)/);
         if (assigneeMatch) {
             assignee = assigneeMatch[1].trim();
         }
         
-        // Apply assignee to all issues
+        // Use dialog values (stored globally) as primary, command as fallback
+        var component = _dialogComponent || '';
+        if (!component) {
+            var compMatch = command.match(/组件[为是:：]\s*(.+?)(?:[,，]|$)/);
+            if (compMatch) component = compMatch[1].trim();
+        }
+        // Also get assignee from dialog if not found in command
+        if (!assignee && _dialogAssignee) {
+            assignee = _dialogAssignee;
+        }
+        console.log('[DEBUG] generateWithAI: assignee=' + assignee + ', component=' + component + ', _dialogComponent=' + _dialogComponent);
+        
+        // Apply assignee and component to all issues
         aiGeneratedIssues = window._pendingPasteIssues.map(function(issue) {
-            return Object.assign({}, issue, { assignee: assignee || issue.assignee || '' });
+            return Object.assign({}, issue, { 
+                assignee: assignee || issue.assignee || '',
+                components: component || issue.components || ''
+            });
         });
+        // Reset dialog values
+        _dialogAssignee = '';
+        _dialogComponent = '';
         window._pendingPasteIssues = null;
         
-        console.log('[AI] Final issues with assignee:', JSON.stringify(aiGeneratedIssues[0], null, 2));
+        console.log('[AI] Final issues with assignee/component:', JSON.stringify(aiGeneratedIssues[0], null, 2));
         
         var statusEl = document.getElementById('ai-status');
         statusEl.className = 'ai-status success';
         var assigneeInfo = assignee ? '，负责人: ' + assignee : '';
-        statusEl.textContent = '✅ 已解析 ' + aiGeneratedIssues.length + ' 条测试用例' + assigneeInfo;
+        var compInfo = component ? '，组件: ' + component : '';
+        statusEl.textContent = '✅ 已解析 ' + aiGeneratedIssues.length + ' 条测试用例' + assigneeInfo + compInfo;
         statusEl.style.display = 'block';
         renderAiPreview();
         document.getElementById('btn-ai-upload').disabled = false;
@@ -2062,9 +2120,10 @@ function renderAiPreview() {
     previewSection.style.display = 'block';
     previewCount.textContent = '(' + aiGeneratedIssues.length + ' 条)';
 
-    thead.innerHTML = '<tr><th>#</th><th>类型</th><th>标题</th><th>描述</th><th>优先级</th><th>负责人</th><th>父任务</th><th>操作</th></tr>';
+    thead.innerHTML = '<tr><th>#</th><th>类型</th><th>标题</th><th>描述</th><th>优先级</th><th>负责人</th><th>组件</th><th>父任务</th><th>操作</th></tr>';
     tbody.innerHTML = '';
 
+    console.log('[DEBUG] renderAiPreview: first issue components=' + (aiGeneratedIssues[0] ? aiGeneratedIssues[0].components : 'N/A'));
     aiGeneratedIssues.forEach(function(issue, idx) {
         var tr = document.createElement('tr');
         var typeBadge = issue.issuetype === 'Test Plan' ?
@@ -2087,6 +2146,7 @@ function renderAiPreview() {
                 '<option value="Lowest"' + (issue.priority === 'Lowest' ? ' selected' : '') + '>Lowest</option>' +
             '</select></td>' +
             '<td contenteditable="true" class="editable-cell" data-field="assignee" style="font-size:12px;">' + escapeHtml(issue.assignee || '') + '</td>' +
+            '<td contenteditable="true" class="editable-cell" data-field="components" style="font-size:12px;">' + escapeHtml(issue.components || '') + '</td>' +
             '<td style="font-size:12px; color:#888;">' + escapeHtml(issue.parentKey || uploadSelectedPlanKey || '-') + '</td>' +
             '<td><button class="btn btn-outline btn-sm" onclick="removeAiIssue(' + idx + ')" style="color:#e74c3c; font-size:11px;">删除</button></td>';
         tbody.appendChild(tr);
@@ -2143,7 +2203,8 @@ function uploadAiResults() {
             'Issue类型': action.issuetype,
             '标签': action.labels || '',
             '父任务Key': action.parentKey || uploadSelectedPlanKey || '',
-            '负责人': action.assignee || ''
+            '负责人': action.assignee || '',
+            '组件': action.components || ''
         };
     });
 
@@ -2173,6 +2234,7 @@ function startBatchUpload() {
             priority: row['优先级'] || row['priority'] || document.getElementById('tc-priority').value,
             labels: row['标签'] || row['labels'] || '',
             assignee: row['负责人'] || row['assignee'] || document.getElementById('tc-assignee').value,
+            components: row['组件'] || row['components'] || '',
             parentKey: row['父任务Key'] || row['parent'] || row['父任务'] || ''
         };
 
@@ -2329,7 +2391,7 @@ function llmEvalAfterUpload() {
         return;
     }
     var btn = document.getElementById('btn-llm-eval');
-    var startTime = Date.now();
+    window._llmActualStartTime = null; // Will be set when LLM actually starts
     if (btn) {
         btn.disabled = true;
         btn.textContent = '⏳ 评估中...';
@@ -2347,7 +2409,7 @@ function llmEvalAfterUpload() {
         var logEl = document.getElementById('progress-log');
         if (logEl) {
             var logs = logEl.textContent;
-            var elapsed = ((Date.now() - startTime) / 1000).toFixed(0);
+            var elapsed = window._llmActualStartTime ? ((Date.now() - window._llmActualStartTime) / 1000).toFixed(0) : null;
             if (logs.indexOf('Test Plan 描述已更新: ' + uploadSelectedPlanKey) !== -1) {
                 clearInterval(checkInterval);
                 if (btn) { btn.disabled = false; btn.textContent = '🧠 LLM评估上传的sub task'; }
@@ -2357,14 +2419,14 @@ function llmEvalAfterUpload() {
                 clearInterval(checkInterval);
                 if (btn) { btn.disabled = false; btn.textContent = '🧠 LLM评估上传的sub task'; }
                 if (ubcBtn2) { ubcBtn2.disabled = false; ubcBtn2.textContent = '🧠 LLM重新评估'; }
-                showLlmEvalStatus('err', '❌ 评估失败，请重试 (耗时 ' + elapsed + ' 秒)');
-            } else if (checkCount > 300) {
+                showLlmEvalStatus('err', '❌ 评估失败，请重试 (耗时 ' + (elapsed || '?') + ' 秒)');
+            } else if (checkCount > 600) {
                 clearInterval(checkInterval);
                 if (btn) { btn.disabled = false; btn.textContent = '🧠 LLM评估上传的sub task'; }
                 if (ubcBtn2) { ubcBtn2.disabled = false; ubcBtn2.textContent = '🧠 LLM重新评估'; }
-                showLlmEvalStatus('err', '⚠️ 超时 (已等待 ' + elapsed + ' 秒)，请检查日志');
-            } else if (checkCount % 5 === 0) {
-                showLlmEvalStatus('loading', '⏳ 评估中...已等待 ' + elapsed + ' 秒');
+                showLlmEvalStatus('err', '⚠️ 超时 (已等待 ' + (elapsed || '?') + ' 秒)，请检查日志');
+            } else {
+                showLlmEvalStatus('loading', elapsed ? '⏳ 评估中...已等待 ' + elapsed + ' 秒' : '⏳ 等待LLM响应...');
             }
         }
     }, 1000);
@@ -2426,7 +2488,20 @@ function updatePlanDescription(planKey) {
         } else {
             addLog('🤖 ' + tasksNeedingEnhance.length + ' 条描述需要 LLM 增强...', 'ok');
         }
-        showLlmEvalStatus('loading', 'LLM 正在处理 ' + tasks.length + ' 条 Sub-task 描述...');
+
+        // Estimate time: ~30 tasks/batch, ~150s/batch, 2 concurrent batches
+        var BATCH_SIZE = 30;
+        var CONCURRENCY = 2;
+        var totalBatches = Math.ceil(tasks.length / BATCH_SIZE);
+        var totalGroups = Math.ceil(totalBatches / CONCURRENCY);
+        var estimatedSeconds = totalGroups * 150;
+        var estMin = Math.floor(estimatedSeconds / 60);
+        var estSec = estimatedSeconds % 60;
+        var estText = estMin > 0 ? estMin + '分' + (estSec > 0 ? estSec + '秒' : '') : estSec + '秒';
+        addLog('📊 预计处理: ' + tasks.length + ' 条 → ' + totalBatches + ' 批×' + CONCURRENCY + '并发，预计耗时约 ' + estText, 'ok');
+        showLlmEvalStatus('loading', '⏳ 预计耗时约 ' + estText + '，正在处理 ' + tasks.length + ' 条 Sub-task...');
+
+        window._llmActualStartTime = Date.now();
 
         // Call LLM to generate/enhance descriptions
         return fetch('/api/testcase/testplan/llm-evaluate', {
@@ -2444,21 +2519,27 @@ function updatePlanDescription(planKey) {
                 mode: 'generate_descriptions'
             })
         })
-        .then(function(r) { return r.json(); })
+        .then(function(r) {
+            var contentType = r.headers.get('content-type');
+            if (contentType && contentType.indexOf('text/html') !== -1) {
+                throw new Error('服务器超时返回HTML，请重试');
+            }
+            return r.json();
+        })
         .then(function(llmResult) {
             if (llmResult.success && llmResult.data && llmResult.data.descriptions) {
                 var descMap = llmResult.data.descriptions;
                 // Logic: 
-                // - Has original description → keep original + append LLM enhancement with test steps
-                // - No description → use LLM generated full description with test steps
+                // - Has original description → replace with LLM enhanced version (don't append to avoid duplication)
+                // - No description → use LLM generated full description
                 var enhanced = 0;
                 var generated = 0;
                 tasks.forEach(function(t) {
                     if (descMap[t.key]) {
                         var origDesc = (t.description || '').trim();
                         if (origDesc) {
-                            // Has original → keep original, append LLM enhancement
-                            t.description = origDesc + '\n\n' + descMap[t.key];
+                            // Has original → use LLM enhanced version (replace, don't append)
+                            t.description = descMap[t.key];
                             enhanced++;
                         } else {
                             // No description → use LLM generated
@@ -2492,7 +2573,13 @@ function updatePlanDescription(planKey) {
                     },
                     body: JSON.stringify({ descriptions: allDescMap })
                 })
-                .then(function(r) { return r.json(); })
+                .then(function(r) {
+                    var contentType = r.headers.get('content-type');
+                    if (contentType && contentType.indexOf('text/html') !== -1) {
+                        throw new Error('Server returned HTML instead of JSON');
+                    }
+                    return r.json();
+                })
                 .then(function(updateResult) {
                     if (updateResult.success && updateResult.data) {
                         addLog('✅ JIRA 描述已更新: ' + updateResult.data.ok + ' 成功 / ' + updateResult.data.failed + ' 失败', 'ok');
@@ -2539,6 +2626,16 @@ function generateAndUploadDescription(tasks, planSummary, planKey) {
             { name: 'Loopback 测试', keywords: ['loopback', 'nes', 'fep', 'tx2rx', 'rx2tx'] },
             { name: 'RxEQ 测试', keywords: ['rxeq', 'rx eq', 'bert'] },
             { name: 'A test', keywords: ['atest', 'a test', 'bu_atest'] }
+        ];
+    } else if (planLower.indexOf('board') !== -1 || planLower.indexOf('板卡') !== -1) {
+        // Board test plan categories (order matters: specific first)
+        categories = [
+            { name: '外观与结构检查', keywords: ['visual inspection', 'socket', '外观', '结构', 'mechanical'] },
+            { name: '时钟验证', keywords: ['clock', '25m', '100m', '156m', '差分', 'differential', '起振', 'jitter'] },
+            { name: '阻抗验证', keywords: ['impedance', '阻抗', 'tdr'] },
+            { name: '电源验证', keywords: ['power', 'voltage', 'led', 'sequence', '上电', '关机', '漏电', '电源'] },
+            { name: '接口验证', keywords: ['spi', 'i2c', 'gpio', 'rom', '拨码', 'switch'] },
+            { name: '复位与保护', keywords: ['reset', 'ctf', '复位', '掉电', 'sms'] }
         ];
     } else if (planLower.indexOf('hbm') !== -1) {
         // HBM test plan categories
@@ -2651,7 +2748,13 @@ function generateAndUploadDescription(tasks, planSummary, planKey) {
             })
         })
     })
-    .then(function(r) { return r.json(); })
+    .then(function(r) {
+        var contentType = r.headers.get('content-type');
+        if (contentType && contentType.indexOf('text/html') !== -1) {
+            throw new Error('服务器超时返回HTML，请重试');
+        }
+        return r.json();
+    })
     .then(function(llmResult) {
         if (llmResult.success && llmResult.data && llmResult.data.evaluation) {
             addLog('✅ LLM 专家评估完成', 'ok');
@@ -2714,31 +2817,31 @@ function regeneratePlanDescription() {
     // Call updatePlanDescription which handles the full flow
     updatePlanDescription(planKey);
 
-    // Monitor completion via a simple polling (max 5 minutes to match backend timeout)
+    // Monitor completion via a simple polling (max 10 minutes)
     var checkCount = 0;
     var checkInterval = setInterval(function() {
         checkCount++;
         var logEl = document.getElementById('progress-log');
         if (logEl) {
             var logs = logEl.textContent;
-            var elapsed = ((Date.now() - startTime) / 1000).toFixed(0);
+            var elapsed = window._llmActualStartTime ? ((Date.now() - window._llmActualStartTime) / 1000).toFixed(0) : null;
             if (logs.indexOf('Test Plan 描述已更新: ' + planKey) !== -1) {
                 clearInterval(checkInterval);
                 if (btn) { btn.disabled = false; btn.textContent = '🧠 LLM 评估 Test Plan'; }
                 if (ubcBtn) { ubcBtn.disabled = false; ubcBtn.textContent = '🧠 LLM重新评估'; }
-                updateStatus('✅ 评估完成，耗时 ' + elapsed + ' 秒', '#16a34a');
+                updateStatus('✅ 评估完成，耗时 ' + (elapsed || '?') + ' 秒', '#16a34a');
             } else if (logs.indexOf('更新描述失败') !== -1) {
                 clearInterval(checkInterval);
                 if (btn) { btn.disabled = false; btn.textContent = '🧠 LLM 评估 Test Plan'; }
                 if (ubcBtn) { ubcBtn.disabled = false; ubcBtn.textContent = '🧠 LLM重新评估'; }
-                updateStatus('❌ 生成失败，请重试 (耗时 ' + elapsed + ' 秒)', '#dc2626');
-            } else if (checkCount > 300) {
+                updateStatus('❌ 生成失败，请重试 (耗时 ' + (elapsed || '?') + ' 秒)', '#dc2626');
+            } else if (checkCount > 600) {
                 clearInterval(checkInterval);
                 if (btn) { btn.disabled = false; btn.textContent = '🧠 LLM 评估 Test Plan'; }
                 if (ubcBtn) { ubcBtn.disabled = false; ubcBtn.textContent = '🧠 LLM重新评估'; }
-                updateStatus('⚠️ 超时 (已等待 ' + elapsed + ' 秒)，请检查日志', '#d97706');
-            } else if (checkCount % 5 === 0) {
-                updateStatus('⏳ 评估中...已等待 ' + elapsed + ' 秒', '#2563eb');
+                updateStatus('⚠️ 超时 (已等待 ' + (elapsed || '?') + ' 秒)，请检查日志', '#d97706');
+            } else {
+                updateStatus(elapsed ? '⏳ 评估中...已等待 ' + elapsed + ' 秒' : '⏳ 等待LLM响应...', '#2563eb');
             }
         }
     }, 1000);
@@ -2746,6 +2849,133 @@ function regeneratePlanDescription() {
 
 function downloadTemplate() {
     window.location.href = '/api/testcase/template';
+}
+
+// ============ Create Test Cases Dialog ============
+function showCreateTestCasesDialog() {
+    if (!uploadSelectedPlanKey) { alert('请先选择一个 Test Plan'); return; }
+    document.getElementById('create-tc-modal').style.display = 'flex';
+    document.getElementById('tc-dialog-assignee').value = '';
+    document.getElementById('tc-dialog-assignee').focus();
+    
+    // Load components from JIRA
+    var projectKey = document.getElementById('tc-project').value;
+    var compSelect = document.getElementById('tc-dialog-component');
+    compSelect.innerHTML = '<option value="">加载中...</option>';
+    
+    fetch('/api/testcase/projects', {
+        credentials: 'same-origin',
+        headers: authToken ? { 'Authorization': 'Bearer ' + authToken } : {}
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        // Find current project's components via search
+        return fetch('/api/testcase/search?project=' + projectKey + '&maxResults=1', {
+            credentials: 'same-origin',
+            headers: authToken ? { 'Authorization': 'Bearer ' + authToken } : {}
+        });
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        // Get unique components from all issues
+        var compSet = {};
+        if (data.success && data.data && data.data.issues) {
+            data.data.issues.forEach(function(issue) {
+                if (issue.components && issue.components.length > 0) {
+                    issue.components.forEach(function(c) { compSet[c] = true; });
+                }
+            });
+        }
+        // Also add common components
+        var commonComps = ['ETH', 'HBM', 'PCIe', 'UCIe', 'Board', 'FW', 'SW', 'HW', 'System'];
+        commonComps.forEach(function(c) { compSet[c] = true; });
+        
+        compSelect.innerHTML = '<option value="">-- 选择组件 --</option>';
+        Object.keys(compSet).sort().forEach(function(c) {
+            compSelect.innerHTML += '<option value="' + c + '">' + c + '</option>';
+        });
+    })
+    .catch(function() {
+        compSelect.innerHTML = '<option value="">-- 选择组件 --</option>';
+    });
+}
+
+function closeCreateTestCasesDialog() {
+    document.getElementById('create-tc-modal').style.display = 'none';
+}
+
+function confirmCreateTestCases() {
+    var assignee = document.getElementById('tc-dialog-assignee').value.trim();
+    var component = document.getElementById('tc-dialog-component').value.trim();
+    
+    if (!assignee) {
+        alert('请填写负责人');
+        return;
+    }
+    
+    var cmd = '在当前Test Plan下创建测试用例,负责人为' + assignee;
+    if (component) {
+        cmd += ',组件为' + component;
+    }
+    
+    console.log('[DEBUG] confirmCreateTestCases: assignee=' + assignee + ', component=' + component + ', cmd=' + cmd);
+    // Search JIRA for user match
+    var project = document.getElementById('tc-project').value || 'BR200';
+    fetch('/api/testcase/search-user?name=' + encodeURIComponent(assignee), {
+        credentials: 'same-origin',
+        headers: authToken ? { 'Authorization': 'Bearer ' + authToken } : {}
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        var matchedAssignee = assignee;
+        if (data.success && data.data && data.data.bestMatch) {
+            matchedAssignee = data.data.bestMatch.displayName || data.data.bestMatch.name || assignee;
+        }
+        
+        // Store matched assignee and component globally
+        _dialogAssignee = matchedAssignee;
+        _dialogComponent = component;
+        console.log('[DEBUG] confirmCreateTestCases: matchedAssignee=' + matchedAssignee + ', component=' + component + ', _dialogComponent=' + _dialogComponent);
+        
+        closeCreateTestCasesDialog();
+        fillCommand('在当前Test Plan下创建测试用例,负责人为' + matchedAssignee + (component ? ',组件为' + component : ''));
+    })
+    .catch(function() {
+        // Fallback: use original assignee
+        _dialogAssignee = assignee;
+        _dialogComponent = component;
+        closeCreateTestCasesDialog();
+        fillCommand(cmd);
+    });
+}
+
+
+// ============ JIRA User Search ============
+function searchJiraUser(name, callback) {
+    if (!name || name.match(/^E\d+$/)) {
+        callback(name);
+        return;
+    }
+    fetch('/api/testcase/search?project=' + (document.getElementById('tc-project').value || 'BR200') + '&query=' + encodeURIComponent(name) + '&maxResults=1', {
+        credentials: 'same-origin',
+        headers: authToken ? { 'Authorization': 'Bearer ' + authToken } : {}
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        // Search for user via a simple approach - use the search endpoint with assignee filter
+        return fetch('/api/testcase/search?project=' + (document.getElementById('tc-project').value || 'BR200') + '&maxResults=1', {
+            credentials: 'same-origin',
+            headers: authToken ? { 'Authorization': 'Bearer ' + authToken } : {}
+        });
+    })
+    .then(function(r) { return r.json(); })
+    .then(function() {
+        // Just return the original name for now - backend will handle matching
+        callback(name);
+    })
+    .catch(function() {
+        callback(name);
+    });
 }
 
 // ============ Date Setting Modal ============
