@@ -195,6 +195,37 @@ jira-testcase-manager/
 
 ## 版本历史
 
+### v1.5.0 (2026-06-25)
+基于 v1.2.0 新增以下功能：
+
+**状态批量修改**
+- 点击 Sub-task 状态列可直接修改（下拉选择目标状态）
+- 支持勾选多个 Sub-task 批量修改状态，自动获取共同可用的 transitions
+- 批量操作栏：选择目标状态 → 应用 → 保存到 JIRA
+
+**LLM 批处理并行优化**
+- 描述生成改为分批处理（每批30个 task），2路并行（Promise.all）
+- 46个 task 从 ~315秒降至 ~150秒，150个 task 约7-8分钟
+- 每批独立超时5分钟，总超时10分钟
+- prompt 精简：去掉 status/priority 字段，减少 input tokens
+
+**LLM 评估分类逻辑**
+- 12个标准分类模块：BootROM/PCIe/UCIe-D2D/IODCL-IOUCIe/HBM/MMIO/I2C/PMIC/SPI-Flash-DMA/PVTC/Mailbox/PLT
+- 关键规则：HSDCL 属于 UCIe-D2D（非PCIe）；IODCL/IOUCIe 单独分类；PMIC 属于电源管理（非HBM）
+- 分类逻辑写入 LLM system prompt，适用于所有 Test Plan 评估
+
+**预估耗时显示**
+- LLM 处理前显示预估耗时（基于 batch 数 × 并行度）
+- 计时从 LLM 实际开始算起，未响应前显示"等待LLM响应..."
+- 两处 fetch 均添加 content-type 检查，防止超时后 HTML 解析失败
+
+**界面优化**
+- Sub-Test Plans 显示 "Total x cases"（去掉 Opened 状态）
+- 组件分布柱状图顶部显示 "已完成/总数" 数值标签
+- Nginx proxy_read_timeout 从 180s 提升至 900s
+- 修复 uploadAiResults 未映射 components 字段导致 sub-task 组件为空
+- 修复 transitions API 响应格式不匹配（前端 data.data vs 后端 data.data.transitions）
+
 ### v1.2.0 (2026-06-24)
 基于 v1.0.0 新增以下功能：
 - **LLM描述增强优化**：保留原始描述，补充测试目的和期望预期

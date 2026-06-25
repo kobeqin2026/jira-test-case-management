@@ -646,8 +646,7 @@ function renderLinkedPlans(plans) {
         html += '<a href="https://jira01.birentech.com/browse/' + lp.key + '" target="_blank" style="font-weight:600; color:#3498db; text-decoration:none;">' + lp.key + '</a>';
         html += '<span class="pc-type ' + typeClass + '" style="font-size:10px;">' + lp.issuetype + '</span>';
         html += '<span style="font-size:13px; color:#333; flex:1;">' + escapeHtml(lp.summary) + '</span>';
-        html += '<span style="font-size:12px; color:#666;">' + lp.status + '</span>';
-        html += '<span style="font-size:12px; color:#27ae60; font-weight:600;">' + (lp.subtasks ? lp.subtasks.length : 0) + ' cases</span>';
+        html += '<span style="font-size:12px; color:#27ae60; font-weight:600;">Total ' + (lp.subtasks ? lp.subtasks.length : 0) + ' cases</span>';
         html += '</div>';
     });
     html += '</div>';
@@ -965,7 +964,29 @@ function initPendingPieCharts() {
                 }
             });
         } else {
-            // Component stacked bar chart
+            // Component stacked bar chart with datalabels
+            var doneData = item.doneData;
+            var totalData = item.totalData;
+            var barLabelPlugin = {
+                id: 'barLabels',
+                afterDatasetsDraw: function(chart) {
+                    var ctx = chart.ctx;
+                    ctx.save();
+                    ctx.font = 'bold 11px sans-serif';
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'bottom';
+                    // Use dataset 1 (top of stacked bar) for Y position
+                    var meta = chart.getDatasetMeta(1);
+                    meta.data.forEach(function(bar, i) {
+                        var done = doneData[i];
+                        var total = totalData[i];
+                        var label = done + '/' + total;
+                        ctx.fillStyle = total === 0 ? '#999' : '#333';
+                        ctx.fillText(label, bar.x, bar.y - 6);
+                    });
+                    ctx.restore();
+                }
+            };
             new Chart(ctx, {
                 type: 'bar',
                 data: {
@@ -978,14 +999,17 @@ function initPendingPieCharts() {
                 options: {
                     responsive: true,
                     maintainAspectRatio: false,
+                    layout: { padding: { top: 24 } },
                     scales: {
                         x: { stacked: true, grid: { display: false } },
                         y: { stacked: true, beginAtZero: true, ticks: { stepSize: 1 } }
                     },
                     plugins: {
-                        legend: { position: 'bottom', labels: { padding: 10, font: { size: 11 } } }
+                        legend: { position: 'bottom', labels: { padding: 10, font: { size: 11 } } },
+                        barLabels: {}
                     }
-                }
+                },
+                plugins: [barLabelPlugin]
             });
         }
     });
@@ -1425,8 +1449,8 @@ function fetchTransitionsForSelected() {
         })
         .then(function(r) { return r.json(); })
         .then(function(data) {
-            if (data.success && data.data) {
-                transitionCache[key] = data.data;
+            if (data.success && data.data && data.data.transitions) {
+                transitionCache[key] = data.data.transitions;
             }
         })
         .catch(function() {});
@@ -1494,9 +1518,9 @@ function onStatusClick(e) {
     })
     .then(function(r) { return r.json(); })
     .then(function(data) {
-        if (data.success && data.data) {
-            transitionCache[key] = data.data;
-            showStatusDropdown(td, key, data.data, currentStatus);
+        if (data.success && data.data && data.data.transitions) {
+            transitionCache[key] = data.data.transitions;
+            showStatusDropdown(td, key, data.data.transitions, currentStatus);
         } else {
             td.innerHTML = getStatusBadge(currentStatus);
         }
@@ -1611,13 +1635,16 @@ function saveStatusToJira() {
     .then(function(data) {
         btn.disabled = false;
         if (data.success && data.data) {
-            var ok = data.data.results.length;
-            var fail = data.data.errors.length;
+            var ok = data.data.ok || 0;
+            var fail = data.data.failed || 0;
             if (fail > 0) {
-                var errMsg = data.data.errors.map(function(e) { return e.key + ': ' + e.error; }).join('\n');
+                var errMsg = (data.data.errors || []).map(function(e) { return e.key + ': ' + e.error; }).join('\n');
                 alert('\u2705 成功 ' + ok + ' 条\n\u274c 失败 ' + fail + ' 条\n\n' + errMsg);
+            } else {
+                alert('\u2705 成功 ' + ok + ' 条');
             }
-            btn.textContent = '\U0001f4be 保存到JIRA';
+            pendingChanges = {};
+            btn.textContent = '\uD83D\uDCBE 保存到JIRA';
             // Reload data then check auto-close
             if (selectedParent) {
                 selectParent(selectedParent.key);
@@ -1625,7 +1652,7 @@ function saveStatusToJira() {
             }
         } else {
             alert('\u274c 保存失败: ' + (data.error || '未知错误'));
-            btn.textContent = '\U0001f4be 保存到JIRA';
+            btn.textContent = '\uD83D\uDCBE 保存到JIRA';
         }
     })
     .catch(function(e) {

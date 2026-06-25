@@ -660,7 +660,7 @@ router.post('/transition', auth.authenticateToken, async function(req, res) {
  */
 router.post('/transition-batch', auth.authenticateToken, async function(req, res) {
     try {
-        var items = req.body.items || [];
+        var items = req.body.transitions || req.body.items || [];
         var results = [];
         var errors = [];
         var userPat = req.user.jiraPat || '';
@@ -1064,7 +1064,7 @@ router.post('/testplan/llm-evaluate', auth.authenticateToken, async function(req
                 return (i + 1) + '. [' + t.key + '] ' + (t.summary || '') + (desc ? ' — ' + desc : ' (无描述)') + ' [' + (t.status || 'N/A') + '] [' + (t.priority || 'N/A') + ']';
             }).join('\n');
 
-            var evalSystemPrompt = '你是一位资深的硬件测试专家，专注于GPU/UCIe/PCIe/HBM高速接口芯片的验证与测试。' +
+            var evalSystemPrompt = '你是一位资深的芯片硬件测试专家，专注于GPU/UCIe/PCIe/HBM高速接口芯片的验证与测试。' +
                 '你擅长分析测试计划的完整性、覆盖度和风险点。' +
                 '请根据提供的测试用例列表，给出专业的评估意见。' +
                 '评估内容包括：' +
@@ -1072,6 +1072,20 @@ router.post('/testplan/llm-evaluate', auth.authenticateToken, async function(req
                 '2. 测试重点分析：哪些是核心验证点，优先级是否合理' +
                 '3. 风险与建议：潜在的测试盲区、建议补充的测试场景' +
                 '4. 整体评价：一句话总结测试计划的质量水平' +
+                '评估时必须按以下标准模块分类测试用例（不要遗漏任何模块，没有用例的模块可省略）：' +
+                '- BootROM启动与固件加载：BootROM启动模式、固件加载链路' +
+                '- PCIe接口测试：PCIe link up/speed/width切换、PHY FW更新' +
+                '- UCIe/D2D接口测试：UCIe链路建立、D2D间读写（含HSDCL）' +
+                '- IODCL/IOUCIe接口测试：IO Die Control Link、IO UCIe链路' +
+                '- HBM存储测试：HBM初始化、通道读写' +
+                '- MMIO读写测试：Die间MMIO地址空间读写' +
+                '- I2C/外设接口测试：I2C主从模式、EEPROM、传感器' +
+                '- PMIC电源管理测试：PMIC通信、电源轨配置、电流传感器' +
+                '- SPI/Flash/DMA存储测试：SPI读写、Flash、uDMA传输' +
+                '- 温度传感器/PVTC测试：PVTC温度传感器、CTF临界温度告警' +
+                '- Mailbox通信测试：SYSCTRL/BRSTATUS Mailbox' +
+                '- PLT配置测试：功率限制表初始化' +
+                '关键分类规则：HSDCL属于UCIe/D2D接口（不是PCIe）；IODCL/IOUCIe单独分类；PMIC属于电源管理（不是HBM）；UCIe属于D2D接口（不是PCIe）。' +
                 '请用中文回答，格式清晰，使用JIRA wiki markup格式（h3. 标题，*加粗*，- 列表等）。' +
                 '保持简洁专业，控制在300字以内。';
 
