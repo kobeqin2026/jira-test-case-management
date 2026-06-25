@@ -493,6 +493,20 @@ function loadParents() {
     // Show breadcrumb with project
     showBreadcrumb(project);
 
+    // Fetch project components for filter
+    projectComponents = [];
+    fetch('/api/testcase/components?project=' + encodeURIComponent(project), {
+        credentials: 'same-origin',
+        headers: authToken ? { 'Authorization': 'Bearer ' + authToken } : {}
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        if (data.success && data.data && data.data.components) {
+            projectComponents = data.data.components;
+        }
+    })
+    .catch(function() {});
+
     // Fetch both Task and Test Plan
     fetch('/api/testcase/search?project=' + encodeURIComponent(project) + '&issuetype=Task,Test+Plan&maxResults=100', {
         credentials: 'same-origin',
@@ -646,8 +660,7 @@ function renderLinkedPlans(plans) {
         html += '<a href="https://jira01.birentech.com/browse/' + lp.key + '" target="_blank" style="font-weight:600; color:#3498db; text-decoration:none;">' + lp.key + '</a>';
         html += '<span class="pc-type ' + typeClass + '" style="font-size:10px;">' + lp.issuetype + '</span>';
         html += '<span style="font-size:13px; color:#333; flex:1;">' + escapeHtml(lp.summary) + '</span>';
-        html += '<span style="font-size:12px; color:#666;">' + lp.status + '</span>';
-        html += '<span style="font-size:12px; color:#27ae60; font-weight:600;">' + (lp.subtasks ? lp.subtasks.length : 0) + ' cases</span>';
+        html += '<span style="font-size:12px; color:#27ae60; font-weight:600;">Total ' + (lp.subtasks ? lp.subtasks.length : 0) + ' cases</span>';
         html += '</div>';
     });
     html += '</div>';
@@ -965,7 +978,29 @@ function initPendingPieCharts() {
                 }
             });
         } else {
-            // Component stacked bar chart
+            // Component stacked bar chart with datalabels
+            var doneData = item.doneData;
+            var totalData = item.totalData;
+            var barLabelPlugin = {
+                id: 'barLabels',
+                afterDatasetsDraw: function(chart) {
+                    var ctx = chart.ctx;
+                    ctx.save();
+                    ctx.font = 'bold 11px sans-serif';
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'bottom';
+                    // Use dataset 1 (top of stacked bar) for Y position
+                    var meta = chart.getDatasetMeta(1);
+                    meta.data.forEach(function(bar, i) {
+                        var done = doneData[i];
+                        var total = totalData[i];
+                        var label = done + '/' + total;
+                        ctx.fillStyle = total === 0 ? '#999' : '#333';
+                        ctx.fillText(label, bar.x, bar.y - 6);
+                    });
+                    ctx.restore();
+                }
+            };
             new Chart(ctx, {
                 type: 'bar',
                 data: {
@@ -978,14 +1013,17 @@ function initPendingPieCharts() {
                 options: {
                     responsive: true,
                     maintainAspectRatio: false,
+                    layout: { padding: { top: 24 } },
                     scales: {
                         x: { stacked: true, grid: { display: false } },
                         y: { stacked: true, beginAtZero: true, ticks: { stepSize: 1 } }
                     },
                     plugins: {
-                        legend: { position: 'bottom', labels: { padding: 10, font: { size: 11 } } }
+                        legend: { position: 'bottom', labels: { padding: 10, font: { size: 11 } } },
+                        barLabels: {}
                     }
-                }
+                },
+                plugins: [barLabelPlugin]
             });
         }
     });
@@ -998,6 +1036,7 @@ function initPendingPieCharts() {
 
 var pendingChanges = {};      // { key: transitionId }
 var transitionCache = {};     // { key: [{ id, name }] }
+var projectComponents = [];   // all components for current project
 var allDetailIssues = [];     // store for re-render
 var allSubtasksGlobal = [];   // all subtasks for current parent
 var filterState = { status: '', owner: '', search: '', components: '' };
@@ -1075,11 +1114,16 @@ function populateFilterDropdowns(issues) {
 
     var compSel = document.getElementById('filter-components');
     var savedComp = compSel.value;
-    compSel.innerHTML = '<option value="">\u5168\u90e8\u7ec4\u4ef6</option>';
-    Object.keys(compCount).sort().forEach(function(c) {
+    compSel.innerHTML = '<option value="">全部组件</option>';
+    // Merge project components with actual sub-task components
+    var allComps = {};
+    projectComponents.forEach(function(c) { allComps[c] = allComps[c] || 0; });
+    Object.keys(compCount).forEach(function(c) { allComps[c] = compCount[c]; });
+    Object.keys(allComps).sort().forEach(function(c) {
         var opt = document.createElement('option');
         opt.value = c;
-        opt.textContent = c + ' (' + compCount[c] + ')';
+        var count = allComps[c];
+        opt.textContent = count > 0 ? c + ' (' + count + ')' : c;
         compSel.appendChild(opt);
     });
     if (savedComp) compSel.value = savedComp;
@@ -1425,8 +1469,8 @@ function fetchTransitionsForSelected() {
         })
         .then(function(r) { return r.json(); })
         .then(function(data) {
-            if (data.success && data.data) {
-                transitionCache[key] = data.data;
+            if (data.success && data.data && data.data.transitions) {
+                transitionCache[key] = data.data.transitions;
             }
         })
         .catch(function() {});
@@ -1494,9 +1538,9 @@ function onStatusClick(e) {
     })
     .then(function(r) { return r.json(); })
     .then(function(data) {
-        if (data.success && data.data) {
-            transitionCache[key] = data.data;
-            showStatusDropdown(td, key, data.data, currentStatus);
+        if (data.success && data.data && data.data.transitions) {
+            transitionCache[key] = data.data.transitions;
+            showStatusDropdown(td, key, data.data.transitions, currentStatus);
         } else {
             td.innerHTML = getStatusBadge(currentStatus);
         }
@@ -1611,13 +1655,16 @@ function saveStatusToJira() {
     .then(function(data) {
         btn.disabled = false;
         if (data.success && data.data) {
-            var ok = data.data.results.length;
-            var fail = data.data.errors.length;
+            var ok = data.data.ok || 0;
+            var fail = data.data.failed || 0;
             if (fail > 0) {
-                var errMsg = data.data.errors.map(function(e) { return e.key + ': ' + e.error; }).join('\n');
+                var errMsg = (data.data.errors || []).map(function(e) { return e.key + ': ' + e.error; }).join('\n');
                 alert('\u2705 成功 ' + ok + ' 条\n\u274c 失败 ' + fail + ' 条\n\n' + errMsg);
+            } else {
+                alert('\u2705 成功 ' + ok + ' 条');
             }
-            btn.textContent = '\U0001f4be 保存到JIRA';
+            pendingChanges = {};
+            btn.textContent = '\uD83D\uDCBE 保存到JIRA';
             // Reload data then check auto-close
             if (selectedParent) {
                 selectParent(selectedParent.key);
@@ -1625,7 +1672,7 @@ function saveStatusToJira() {
             }
         } else {
             alert('\u274c 保存失败: ' + (data.error || '未知错误'));
-            btn.textContent = '\U0001f4be 保存到JIRA';
+            btn.textContent = '\uD83D\uDCBE 保存到JIRA';
         }
     })
     .catch(function(e) {
@@ -1969,12 +2016,19 @@ if (aiPromptEl) {
             if (compMatch) preservedCmd += ',组件为' + compMatch[1].trim();
         }
         
-        // Set text: preserved command + pasted data
-        textarea.value = preservedCmd ? preservedCmd + '\n' + text : text;
-        window._pendingPasteIssues = issues;
+        // Append text to textarea instead of replacing
+        var existingText = textarea.value.trim();
+        if (existingText) {
+            textarea.value = existingText + '\n' + text;
+        } else {
+            textarea.value = preservedCmd ? preservedCmd + '\n' + text : text;
+        }
+        // Append to pending issues instead of overwriting
+        if (!window._pendingPasteIssues) window._pendingPasteIssues = [];
+        window._pendingPasteIssues = window._pendingPasteIssues.concat(issues);
         var statusEl = document.getElementById('ai-status');
         statusEl.className = 'ai-status success';
-        statusEl.textContent = '✅ 检测到 ' + issues.length + ' 条数据，点击「解析并创建」按钮解析';
+        statusEl.textContent = '✅ 检测到 ' + window._pendingPasteIssues.length + ' 条数据，点击「解析并创建」按钮解析';
         statusEl.style.display = 'block';
     }
     // If no valid issues parsed, let the default paste happen (regular text)
@@ -2091,11 +2145,33 @@ function generateWithAI() {
     .then(function(data) {
         if (data.success && data.data && data.data.actions) {
             aiGeneratedIssues = data.data.actions;
-            statusEl.className = 'ai-status success';
-            var summary = aiGeneratedIssues.map(function(a) { return a.issuetype + ': ' + a.summary; }).join(', ');
-            statusEl.textContent = '✅ 解析完成，共 ' + aiGeneratedIssues.length + ' 个操作: ' + summary;
-            renderAiPreview();
-            document.getElementById('btn-ai-upload').disabled = false;
+            // Post-process: match assignees to JIRA users and normalize components
+            var project = document.getElementById('tc-project').value || 'BR200';
+            var matchPromises = aiGeneratedIssues.map(function(action) {
+                // Normalize components: array -> string
+                if (Array.isArray(action.components)) {
+                    action.components = action.components.join(', ');
+                }
+                if (!action.assignee) return Promise.resolve();
+                return fetch('/api/testcase/search-user?name=' + encodeURIComponent(action.assignee), {
+                    credentials: 'same-origin',
+                    headers: authToken ? { 'Authorization': 'Bearer ' + authToken } : {}
+                })
+                .then(function(r) { return r.json(); })
+                .then(function(userData) {
+                    if (userData.success && userData.data && userData.data.bestMatch) {
+                        action.assignee = userData.data.bestMatch.name || userData.data.bestMatch.displayName || action.assignee;
+                    }
+                })
+                .catch(function() {});
+            });
+            Promise.all(matchPromises).then(function() {
+                statusEl.className = 'ai-status success';
+                var summary = aiGeneratedIssues.map(function(a) { return a.issuetype + ': ' + a.summary; }).join(', ');
+                statusEl.textContent = '✅ 解析完成，共 ' + aiGeneratedIssues.length + ' 个操作: ' + summary;
+                renderAiPreview();
+                document.getElementById('btn-ai-upload').disabled = false;
+            });
         } else {
             statusEl.className = 'ai-status error';
             statusEl.textContent = '❌ ' + (data.error || '解析失败');
@@ -2410,11 +2486,11 @@ function llmEvalAfterUpload() {
         if (logEl) {
             var logs = logEl.textContent;
             var elapsed = window._llmActualStartTime ? ((Date.now() - window._llmActualStartTime) / 1000).toFixed(0) : null;
-            if (logs.indexOf('Test Plan 描述已更新: ' + uploadSelectedPlanKey) !== -1) {
+            if (logs.indexOf('Test Plan 描述已更新: ' + uploadSelectedPlanKey) !== -1 || logs.indexOf('LLM硬件专家评估 Test Plan 完毕') !== -1) {
                 clearInterval(checkInterval);
                 if (btn) { btn.disabled = false; btn.textContent = '🧠 LLM评估上传的sub task'; }
                 if (ubcBtn2) { ubcBtn2.disabled = false; ubcBtn2.textContent = '🧠 LLM重新评估'; }
-                showLlmEvalStatus('ok', '✅ 评估完成，耗时 ' + elapsed + ' 秒');
+                showLlmEvalStatus('ok', '✅ 评估完成，耗时 ' + (elapsed || '?') + ' 秒');
             } else if (logs.indexOf('更新描述失败') !== -1) {
                 clearInterval(checkInterval);
                 if (btn) { btn.disabled = false; btn.textContent = '🧠 LLM评估上传的sub task'; }
@@ -2461,7 +2537,7 @@ function showLlmEvalStatus(status, text) {
     }
 }
 
-function updatePlanDescription(planKey) {
+function updatePlanDescription(planKey, skipStep3) {
     addLog('📝 正在生成 Test Plan 描述摘要...', 'ok');
     showLlmEvalStatus('loading', '正在获取 Sub-task 列表...');
 
@@ -2489,19 +2565,25 @@ function updatePlanDescription(planKey) {
             addLog('🤖 ' + tasksNeedingEnhance.length + ' 条描述需要 LLM 增强...', 'ok');
         }
 
-        // Estimate time: ~30 tasks/batch, ~150s/batch, 2 concurrent batches
+        // Estimate time: ~3 seconds per task, minimum 30 seconds
         var BATCH_SIZE = 30;
         var CONCURRENCY = 2;
-        var totalBatches = Math.ceil(tasks.length / BATCH_SIZE);
-        var totalGroups = Math.ceil(totalBatches / CONCURRENCY);
-        var estimatedSeconds = totalGroups * 150;
+        var estimatedSeconds = Math.max(30, tasks.length * 3);
         var estMin = Math.floor(estimatedSeconds / 60);
         var estSec = estimatedSeconds % 60;
         var estText = estMin > 0 ? estMin + '分' + (estSec > 0 ? estSec + '秒' : '') : estSec + '秒';
+        var totalBatches = Math.ceil(tasks.length / BATCH_SIZE);
         addLog('📊 预计处理: ' + tasks.length + ' 条 → ' + totalBatches + ' 批×' + CONCURRENCY + '并发，预计耗时约 ' + estText, 'ok');
         showLlmEvalStatus('loading', '⏳ 预计耗时约 ' + estText + '，正在处理 ' + tasks.length + ' 条 Sub-task...');
 
         window._llmActualStartTime = Date.now();
+
+        // If skipStep3, skip LLM description generation and go directly to expert evaluation
+        if (skipStep3) {
+            addLog('⏭️ 跳过描述生成，直接进行LLM专家评估...', 'ok');
+            showLlmEvalStatus('loading', 'LLM专家评估 Test Plan 中...');
+            return generateAndUploadDescription(tasks, planSummary, planKey);
+        }
 
         // Call LLM to generate/enhance descriptions
         return fetch('/api/testcase/testplan/llm-evaluate', {
@@ -2530,7 +2612,8 @@ function updatePlanDescription(planKey) {
             if (llmResult.success && llmResult.data && llmResult.data.descriptions) {
                 var descMap = llmResult.data.descriptions;
                 // Logic: 
-                // - Has original description → replace with LLM enhanced version (don't append to avoid duplication)
+                // - Has original + no LLM content → keep original + append LLM enhancement
+                // - Has original + already has LLM content → replace LLM part only
                 // - No description → use LLM generated full description
                 var enhanced = 0;
                 var generated = 0;
@@ -2538,8 +2621,22 @@ function updatePlanDescription(planKey) {
                     if (descMap[t.key]) {
                         var origDesc = (t.description || '').trim();
                         if (origDesc) {
-                            // Has original → use LLM enhanced version (replace, don't append)
-                            t.description = descMap[t.key];
+                            // Check if already has LLM content (测试目的/期望预期 markers)
+                            var llmMarkerIdx = origDesc.indexOf('测试目的');
+                            if (llmMarkerIdx === -1) llmMarkerIdx = origDesc.indexOf('期望预期');
+                            if (llmMarkerIdx !== -1) {
+                                // Has LLM content → extract original part (before LLM marker) + append new LLM content
+                                var originalPart = origDesc.substring(0, llmMarkerIdx).trim();
+                                if (originalPart) {
+                                    t.description = originalPart + '\n\n' + descMap[t.key];
+                                } else {
+                                    // No original content, just LLM → replace with new LLM
+                                    t.description = descMap[t.key];
+                                }
+                            } else {
+                                // Original without LLM → keep original + append
+                                t.description = origDesc + '\n\n' + descMap[t.key];
+                            }
                             enhanced++;
                         } else {
                             // No description → use LLM generated
@@ -2548,7 +2645,7 @@ function updatePlanDescription(planKey) {
                         }
                     }
                 });
-                addLog('✅ LLM 处理完成: ' + generated + ' 条新生成, ' + enhanced + ' 条增强补充', 'ok');
+                addLog('✅ LLM 处理完成: ' + (generated + enhanced) + ' 条描述已生成/更新', 'ok');
                 showLlmEvalStatus('loading', '正在将描述写回 JIRA...');
 
                 // Build map: ALL tasks that got LLM descriptions
@@ -2583,14 +2680,19 @@ function updatePlanDescription(planKey) {
                 .then(function(updateResult) {
                     if (updateResult.success && updateResult.data) {
                         addLog('✅ JIRA 描述已更新: ' + updateResult.data.ok + ' 成功 / ' + updateResult.data.failed + ' 失败', 'ok');
+                        // Step 3 success → auto-trigger Step 4 (LLM expert evaluation)
+                        return generateAndUploadDescription(tasks, planSummary, planKey);
                     } else {
                         addLog('⚠️ JIRA 描述更新失败: ' + (updateResult.error || '未知错误'), 'err');
+                        // Step 3 partial failure → show error, user can retry with "LLM重新评估"
+                        showLlmEvalStatus('err', '描述更新部分失败，请点击"LLM重新评估"重试');
+                        return null;
                     }
-                    return generateAndUploadDescription(tasks, planSummary, planKey);
                 });
             } else {
                 addLog('⚠️ LLM 描述处理跳过', 'err');
-                return generateAndUploadDescription(tasks, planSummary, planKey);
+                showLlmEvalStatus('err', 'LLM描述处理失败，请点击"LLM重新评估"重试');
+                return null;
             }
         });
     })
@@ -2598,6 +2700,8 @@ function updatePlanDescription(planKey) {
         if (result && result.success) {
             addLog('✅ Test Plan 描述已更新: ' + planKey, 'ok');
             showLlmEvalStatus('ok', '✅ Test Plan 描述已更新: ' + planKey);
+        } else if (result === null) {
+            // Step 3 failed, error already shown
         } else if (result) {
             addLog('❌ 更新描述失败: ' + (result.error || '未知错误'), 'err');
             showLlmEvalStatus('err', '描述更新失败: ' + (result.error || '未知错误'));
@@ -2610,127 +2714,183 @@ function updatePlanDescription(planKey) {
 }
 
 function generateAndUploadDescription(tasks, planSummary, planKey) {
-    // Categorize tasks by keywords in summary/description
-    // Dynamically select categories based on Test Plan type
-    var planLower = (planSummary || '').toLowerCase();
-    var categories;
+    // First fetch existing description to preserve category structure
+    return fetch('/api/testcase/testplan/description?planKey=' + encodeURIComponent(planKey), {
+        credentials: 'same-origin',
+        headers: { 'Authorization': 'Bearer ' + authToken }
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(descData) {
+        var existingDesc = (descData.success && descData.data && descData.data.description) || '';
 
-    if (planLower.indexOf('ethernet') !== -1 || planLower.indexOf('以太网') !== -1) {
-        // Ethernet test plan categories
-        categories = [
-            { name: 'PCB 验证', keywords: ['pcb', 'tdr', 'insertion loss', 'impedance'] },
-            { name: '基础测量', keywords: ['voltage', 'clock', 'reference clock', 'measurement'] },
-            { name: '固件与启动', keywords: ['firmware', 'boot', 'bringup', 'bring-up', 'memtest'] },
-            { name: 'Auto-Negotiation', keywords: ['auto-negotiation', 'an ', 'an-status', 'an+lt'] },
-            { name: 'Link Training', keywords: ['link training', 'serdes link', 'lt '] },
-            { name: 'Loopback 测试', keywords: ['loopback', 'nes', 'fep', 'tx2rx', 'rx2tx'] },
-            { name: 'RxEQ 测试', keywords: ['rxeq', 'rx eq', 'bert'] },
-            { name: 'A test', keywords: ['atest', 'a test', 'bu_atest'] }
-        ];
-    } else if (planLower.indexOf('board') !== -1 || planLower.indexOf('板卡') !== -1) {
-        // Board test plan categories (order matters: specific first)
-        categories = [
-            { name: '外观与结构检查', keywords: ['visual inspection', 'socket', '外观', '结构', 'mechanical'] },
-            { name: '时钟验证', keywords: ['clock', '25m', '100m', '156m', '差分', 'differential', '起振', 'jitter'] },
-            { name: '阻抗验证', keywords: ['impedance', '阻抗', 'tdr'] },
-            { name: '电源验证', keywords: ['power', 'voltage', 'led', 'sequence', '上电', '关机', '漏电', '电源'] },
-            { name: '接口验证', keywords: ['spi', 'i2c', 'gpio', 'rom', '拨码', 'switch'] },
-            { name: '复位与保护', keywords: ['reset', 'ctf', '复位', '掉电', 'sms'] }
-        ];
-    } else if (planLower.indexOf('hbm') !== -1) {
-        // HBM test plan categories
-        categories = [
-            { name: 'Protocol & Module 特性验证', keywords: ['protocol stack', 'protocol type', 'protocol format', 'link speed', 'link width', 'single module'] },
-            { name: 'LSM 验证', keywords: ['fdi lsm', 'rdi lsm', 'adapter sideband', 'physical ltsm'] },
-            { name: '复位机制验证', keywords: ['cold-rst', 'soft-rst'] },
-            { name: '数据通路验证', keywords: ['mainband', 'data path', 'datapath'] },
-            { name: '诊断能力验证', keywords: ['register dump', 'diag access', 'diag ', 'linkup'] },
-            { name: 'PMA 验证', keywords: ['pma loopback', 'internal loopback', 'loopback'] },
-            { name: 'Dual Die 验证', keywords: ['dual die'] },
-            { name: '稳定性测试', keywords: ['training status', 'dcl status', 'dcl config', 'power cycle', 'hot reset', 'reboot'] },
-            { name: 'HBM 测试', keywords: ['hbm', 'mc_phy', 'mc bist', 'training status', 'voltage', 'eye', 'pclk', 'diagnostic'] },
-            { name: 'PCIe 测试', keywords: ['pcie', 'link', 'bar', 'msi', 'intx', 'refclk', 'gen5', 'lane', 'polarity'] }
-        ];
-    } else {
-        // Default categories (UCIe/PCIe general)
-        categories = [
-            { name: 'Protocol & Module 特性验证', keywords: ['protocol stack', 'protocol type', 'protocol format', 'link speed', 'link width', 'single module'] },
-            { name: 'LSM 验证', keywords: ['fdi lsm', 'rdi lsm', 'adapter sideband', 'physical ltsm'] },
-            { name: '复位机制验证', keywords: ['cold-rst', 'soft-rst'] },
-            { name: '数据通路验证', keywords: ['mainband', 'data path', 'datapath'] },
-            { name: '诊断能力验证', keywords: ['register dump', 'diag access', 'diag ', 'linkup'] },
-            { name: 'PMA 验证', keywords: ['pma loopback', 'internal loopback', 'loopback'] },
-            { name: 'Dual Die 验证', keywords: ['dual die'] },
-            { name: '稳定性测试', keywords: ['training status', 'dcl status', 'dcl config', 'power cycle', 'hot reset', 'reboot'] },
-            { name: 'HBM 测试', keywords: ['hbm', 'mc_phy', 'mc bist', 'training status', 'voltage', 'eye', 'pclk', 'diagnostic'] },
-            { name: 'PCIe 测试', keywords: ['pcie', 'link', 'bar', 'msi', 'intx', 'refclk', 'gen5', 'lane', 'polarity'] }
-        ];
-    }
-
-    var uncategorized = [];
-    var categorized = {};
-
-    tasks.forEach(function(task) {
-        var text = ((task.summary || '') + ' ' + (task.description || '')).toLowerCase();
-        var matched = false;
-        for (var i = 0; i < categories.length; i++) {
-            var cat = categories[i];
-            for (var j = 0; j < cat.keywords.length; j++) {
-                if (text.indexOf(cat.keywords[j]) !== -1) {
-                    if (!categorized[cat.name]) categorized[cat.name] = [];
-                    categorized[cat.name].push(task);
-                    matched = true;
-                    break;
+        // Parse existing categories from description
+        var existingCats = {}; // { catName: [key1, key2, ...] }
+        var existingCatOrder = []; // maintain order
+        var existingKeys = new Set();
+        var lines = existingDesc.split('\n');
+        var currentCat = '';
+        lines.forEach(function(line) {
+            var catMatch = line.match(/^h2\.\s+\d+\.\s+(.+?)\s*\(\d+项\)/);
+            if (catMatch) {
+                currentCat = catMatch[1].trim();
+                existingCats[currentCat] = [];
+                existingCatOrder.push(currentCat);
+            } else if (currentCat && line.indexOf('|BR200-') !== -1) {
+                var keyMatch = line.match(/\|(BR200-\d+)\s/);
+                if (keyMatch) {
+                    existingCats[currentCat].push(keyMatch[1]);
+                    existingKeys.add(keyMatch[1]);
                 }
             }
-            if (matched) break;
-        }
-        if (!matched) {
-            uncategorized.push(task);
-        }
-    });
-
-    // Build JIRA wiki format description (sub-task summary)
-    var desc = 'h2. Test Summary\n\n';
-    desc += planSummary + '，共 ' + tasks.length + ' 项测试用例。\n\n';
-
-    var catIndex = 1;
-    // Render each category
-    categories.forEach(function(cat) {
-        var items = categorized[cat.name];
-        if (!items || items.length === 0) return;
-        desc += 'h2. ' + catIndex + '. ' + cat.name + ' (' + items.length + '项)\n\n';
-        desc += '||用例||描述||\n';
-        items.forEach(function(task) {
-            var descText = task.description || task.summary;
-            // Truncate long descriptions to first sentence
-            if (descText.length > 120) {
-                descText = descText.substring(0, 120).replace(/\s+\S*$/, '') + '...';
-            }
-            // Escape JIRA wiki pipe characters
-            descText = descText.replace(/\|/g, '\\|').replace(/\n/g, ' ');
-            desc += '|' + task.key + ' ' + task.summary + '|' + descText + '|\n';
         });
-        desc += '\n';
-        catIndex++;
-    });
 
-    // Uncategorized tasks
-    if (uncategorized.length > 0) {
-        desc += 'h2. ' + catIndex + '. 其他测试 (' + uncategorized.length + '项)\n\n';
-        desc += '||用例||描述||\n';
-        uncategorized.forEach(function(task) {
-            var descText = task.description || task.summary;
-            if (descText.length > 120) {
-                descText = descText.substring(0, 120).replace(/\s+\S*$/, '') + '...';
+        // Extract existing evaluation
+        var existingEval = '';
+        var evalMarker = 'h2. 🔍 专家评估 (LLM)';
+        var evalIdx = existingDesc.indexOf(evalMarker);
+        if (evalIdx !== -1) {
+            existingEval = existingDesc.substring(evalIdx + evalMarker.length).trim();
+        }
+
+        // Identify new tasks (not in existing categories)
+        var newTasks = tasks.filter(function(t) { return !existingKeys.has(t.key); });
+
+        // Categorize new tasks using keyword matching
+        var planLower = (planSummary || '').toLowerCase();
+        var categories;
+        if (planLower.indexOf('ethernet') !== -1 || planLower.indexOf('以太网') !== -1) {
+            categories = [
+                { name: 'PCB 验证', keywords: ['pcb', 'tdr', 'insertion loss', 'impedance'] },
+                { name: '基础测量', keywords: ['voltage', 'clock', 'reference clock', 'measurement'] },
+                { name: '固件与启动', keywords: ['firmware', 'boot', 'bringup', 'bring-up', 'memtest'] },
+                { name: 'Auto-Negotiation', keywords: ['auto-negotiation', 'an ', 'an-status', 'an+lt'] },
+                { name: 'Link Training', keywords: ['link training', 'serdes link', 'lt '] },
+                { name: 'Loopback 测试', keywords: ['loopback', 'nes', 'fep', 'tx2rx', 'rx2tx'] },
+                { name: 'RxEQ 测试', keywords: ['rxeq', 'rx eq', 'bert'] },
+                { name: 'A test', keywords: ['atest', 'a test', 'bu_atest'] }
+            ];
+        } else if (planLower.indexOf('board') !== -1 || planLower.indexOf('板卡') !== -1) {
+            categories = [
+                { name: '外观与结构检查', keywords: ['visual inspection', 'socket', '外观', '结构', 'mechanical'] },
+                { name: '时钟验证', keywords: ['clock', '25m', '100m', '156m', '差分', 'differential', '起振', 'jitter'] },
+                { name: '阻抗验证', keywords: ['impedance', '阻抗', 'tdr'] },
+                { name: '电源验证', keywords: ['power', 'voltage', 'led', 'sequence', '上电', '关机', '漏电', '电源'] },
+                { name: '接口验证', keywords: ['spi', 'i2c', 'gpio', 'rom', '拨码', 'switch'] },
+                { name: '复位与保护', keywords: ['reset', 'ctf', '复位', '掉电', 'sms'] }
+            ];
+        } else if (planLower.indexOf('hbm') !== -1) {
+            categories = [
+                { name: 'Protocol & Module 特性验证', keywords: ['protocol stack', 'protocol type', 'protocol format', 'link speed', 'link width', 'single module'] },
+                { name: 'LSM 验证', keywords: ['fdi lsm', 'rdi lsm', 'adapter sideband', 'physical ltsm'] },
+                { name: '复位机制验证', keywords: ['cold-rst', 'soft-rst'] },
+                { name: '数据通路验证', keywords: ['mainband', 'data path', 'datapath'] },
+                { name: '诊断能力验证', keywords: ['register dump', 'diag access', 'diag ', 'linkup'] },
+                { name: 'PMA 验证', keywords: ['pma loopback', 'internal loopback', 'loopback'] },
+                { name: 'Dual Die 验证', keywords: ['dual die'] },
+                { name: '稳定性测试', keywords: ['training status', 'dcl status', 'dcl config', 'power cycle', 'hot reset', 'reboot'] },
+                { name: 'HBM 测试', keywords: ['hbm', 'mc_phy', 'mc bist', 'training status', 'voltage', 'eye', 'pclk', 'diagnostic'] },
+                { name: 'PCIe 测试', keywords: ['pcie', 'link', 'bar', 'msi', 'intx', 'refclk', 'gen5', 'lane', 'polarity'] }
+            ];
+        } else {
+            categories = [
+                { name: 'Protocol & Module 特性验证', keywords: ['protocol stack', 'protocol type', 'protocol format', 'link speed', 'link width', 'single module'] },
+                { name: 'LSM 验证', keywords: ['fdi lsm', 'rdi lsm', 'adapter sideband', 'physical ltsm'] },
+                { name: '复位机制验证', keywords: ['cold-rst', 'soft-rst'] },
+                { name: '数据通路验证', keywords: ['mainband', 'data path', 'datapath'] },
+                { name: '诊断能力验证', keywords: ['register dump', 'diag access', 'diag ', 'linkup'] },
+                { name: 'PMA 验证', keywords: ['pma loopback', 'internal loopback', 'loopback'] },
+                { name: 'Dual Die 验证', keywords: ['dual die'] },
+                { name: '稳定性测试', keywords: ['training status', 'dcl status', 'dcl config', 'power cycle', 'hot reset', 'reboot'] },
+                { name: 'HBM 测试', keywords: ['hbm', 'mc_phy', 'mc bist', 'training status', 'voltage', 'eye', 'pclk', 'diagnostic'] },
+                { name: 'PCIe 测试', keywords: ['pcie', 'link', 'bar', 'msi', 'intx', 'refclk', 'gen5', 'lane', 'polarity'] }
+            ];
+        }
+
+        // Categorize new tasks
+        var newCategorized = {};
+        var newUncategorized = [];
+        newTasks.forEach(function(task) {
+            var text = ((task.summary || '') + ' ' + (task.description || '')).toLowerCase();
+            var matched = false;
+            for (var i = 0; i < categories.length; i++) {
+                var cat = categories[i];
+                for (var j = 0; j < cat.keywords.length; j++) {
+                    if (text.indexOf(cat.keywords[j]) !== -1) {
+                        if (!newCategorized[cat.name]) newCategorized[cat.name] = [];
+                        newCategorized[cat.name].push(task);
+                        matched = true;
+                        break;
+                    }
+                }
+                if (matched) break;
             }
-            descText = descText.replace(/\|/g, '\\|').replace(/\n/g, ' ');
-            desc += '|' + task.key + ' ' + task.summary + '|' + descText + '|\n';
+            if (!matched) newUncategorized.push(task);
         });
-        desc += '\n';
-    }
 
-    // Step 2: Call LLM for expert evaluation
+        // Merge: existing categories + new tasks in matching categories + new uncategorized
+        // Build task lookup
+        var taskMap = {};
+        tasks.forEach(function(t) { taskMap[t.key] = t; });
+
+        // Build final description
+        var desc = 'h2. Test Summary\n\n';
+        desc += planSummary + '，共 ' + tasks.length + ' 项测试用例。\n\n';
+
+        var catIndex = 1;
+        var usedCatNames = new Set();
+
+        // First: render existing categories with their original tasks (updated info)
+        existingCatOrder.forEach(function(catName) {
+            var catKeys = existingCats[catName];
+            var catTasks = catKeys.map(function(k) { return taskMap[k]; }).filter(Boolean);
+            // Add any new tasks that matched this category name
+            if (newCategorized[catName]) {
+                catTasks = catTasks.concat(newCategorized[catName]);
+                usedCatNames.add(catName);
+            }
+            if (catTasks.length === 0) return;
+            desc += 'h2. ' + catIndex + '. ' + catName + ' (' + catTasks.length + '项)\n\n';
+            desc += '||用例||描述||\n';
+            catTasks.forEach(function(task) {
+                var descText = task.description || task.summary;
+                if (descText.length > 120) descText = descText.substring(0, 120).replace(/\s+\S*$/, '') + '...';
+                descText = descText.replace(/\|/g, '\\|').replace(/\n/g, ' ');
+                desc += '|' + task.key + ' ' + task.summary + '|' + descText + '|\n';
+            });
+            desc += '\n';
+            catIndex++;
+        });
+
+        // Second: add new categories from keyword matching (not already in existing)
+        Object.keys(newCategorized).forEach(function(catName) {
+            if (usedCatNames.has(catName)) return;
+            var catTasks = newCategorized[catName];
+            desc += 'h2. ' + catIndex + '. ' + catName + ' (' + catTasks.length + '项)\n\n';
+            desc += '||用例||描述||\n';
+            catTasks.forEach(function(task) {
+                var descText = task.description || task.summary;
+                if (descText.length > 120) descText = descText.substring(0, 120).replace(/\s+\S*$/, '') + '...';
+                descText = descText.replace(/\|/g, '\\|').replace(/\n/g, ' ');
+                desc += '|' + task.key + ' ' + task.summary + '|' + descText + '|\n';
+            });
+            desc += '\n';
+            catIndex++;
+        });
+
+        // Third: uncategorized new tasks
+        if (newUncategorized.length > 0) {
+            desc += 'h2. ' + catIndex + '. 其他测试 (' + newUncategorized.length + '项)\n\n';
+            desc += '||用例||描述||\n';
+            newUncategorized.forEach(function(task) {
+                var descText = task.description || task.summary;
+                if (descText.length > 120) descText = descText.substring(0, 120).replace(/\s+\S*$/, '') + '...';
+                descText = descText.replace(/\|/g, '\\|').replace(/\n/g, ' ');
+                desc += '|' + task.key + ' ' + task.summary + '|' + descText + '|\n';
+            });
+            desc += '\n';
+        }
+
+    // Step 2: Call LLM for expert evaluation (use existingEval already extracted)
     addLog('🤖 正在调用 LLM 专家评估...', 'ok');
     showLlmEvalStatus('loading', 'LLM硬件专家评估 Test Plan 中...');
 
@@ -2745,7 +2905,9 @@ function generateAndUploadDescription(tasks, planSummary, planKey) {
             planSummary: planSummary,
             tasks: tasks.map(function(t) {
                 return { key: t.key, summary: t.summary, description: t.description || '', status: t.status || '', priority: t.priority || '' };
-            })
+            }),
+            existingEvaluation: existingEval,
+            existingDescription: existingDesc
         })
     })
     .then(function(r) {
@@ -2759,9 +2921,81 @@ function generateAndUploadDescription(tasks, planSummary, planKey) {
         if (llmResult.success && llmResult.data && llmResult.data.evaluation) {
             addLog('✅ LLM 专家评估完成', 'ok');
             showLlmEvalStatus('ok', '✅ LLM硬件专家评估 Test Plan 完毕');
-            // Append LLM evaluation to description
-            desc += 'h2. 🔍 专家评估 (LLM)\n\n';
-            desc += llmResult.data.evaluation + '\n\n';
+            var evalText = llmResult.data.evaluation;
+            
+            // Extract categorization review and apply it to description
+            var reviewMatch = evalText.match(/h3\.\s*分类复盘[：:]?\s*\n([\s\S]*?)(?=\nh3\.|$)/);
+            if (!reviewMatch) {
+                // Try alternative format: 分类复盘： without h3
+                reviewMatch = evalText.match(/分类复盘[：:]\s*\n([\s\S]*?)(?=\nh3\.|$)/);
+            }
+            if (reviewMatch) {
+                var reviewSection = reviewMatch[1];
+                // Parse corrected categories from LLM output
+                // Format: h2. N. Category Name (X项)\n||用例||描述||\n|key summary|...|
+                var correctedCats = [];
+                var catRegex = /h2\.\s*\d+\.\s*(.+?)\s*\((\d+)项\)\s*\n\|\|用例\|\|描述\|\|\s*\n([\s\S]*?)(?=\nh2\.|$)/g;
+                var cm;
+                while ((cm = catRegex.exec(reviewSection)) !== null) {
+                    var catName = cm[1].trim();
+                    var items = [];
+                    var rowRegex = /\|(BR200-\d+)\s+(.+?)\|/g;
+                    var rm;
+                    while ((rm = rowRegex.exec(cm[3])) !== null) {
+                        items.push({ key: rm[1], summary: rm[2].trim() });
+                    }
+                    if (items.length > 0) correctedCats.push({ name: catName, items: items });
+                }
+                
+                // Fallback: try list format * **Category** \n - [key] summary
+                if (correctedCats.length === 0) {
+                    var catBlocks = reviewSection.split(/\n\*\s+\*\*/);
+                    catBlocks.forEach(function(block) {
+                        var nameMatch = block.match(/^(.+?)\*\*/);
+                        if (!nameMatch) return;
+                        var catName = nameMatch[1].trim();
+                        var items = [];
+                        var itemRegex = /\[?(BR200-\d+)\]?\s+(.+)/g;
+                        var m;
+                        while ((m = itemRegex.exec(block)) !== null) {
+                            items.push({ key: m[1], summary: m[2].trim() });
+                        }
+                        if (items.length > 0) correctedCats.push({ name: catName, items: items });
+                    });
+                }
+                
+                if (correctedCats.length > 0) {
+                    // Rebuild description with corrected categories
+                    addLog('🔧 分类复盘：检测到分类修正，正在更新描述...', 'ok');
+                    desc = 'h2. Test Summary\n\n';
+                    desc += planSummary + '，共 ' + tasks.length + ' 项测试用例。\n\n';
+                    var catIdx = 1;
+                    correctedCats.forEach(function(cat) {
+                        desc += 'h2. ' + catIdx + '. ' + cat.name + ' (' + cat.items.length + '项)\n\n';
+                        desc += '||用例||描述||\n';
+                        cat.items.forEach(function(item) {
+                            var t = tasks.find(function(t) { return t.key === item.key; });
+                            var descText = (t && t.description) ? t.description : item.summary;
+                            if (descText.length > 120) descText = descText.substring(0, 120).replace(/\s+\S*$/, '') + '...';
+                            descText = descText.replace(/\|/g, '\\|').replace(/\n/g, ' ');
+                            desc += '|' + item.key + ' ' + item.summary + '|' + descText + '|\n';
+                        });
+                        desc += '\n';
+                        catIdx++;
+                    });
+                }
+                // Always remove categorization review from evaluation text
+                evalText = evalText.replace(reviewMatch[0], '').trim();
+            }
+            // Also remove any remaining categorization review patterns
+            evalText = evalText.replace(/h3\.\s*分类复盘[：:]?[\s\S]*?(?=\nh3\.|$)/g, '').trim();
+            evalText = evalText.replace(/分类复盘[：:][\s\S]*?(?=\nh3\.|$)/g, '').trim();
+            
+            // Append remaining evaluation (without categorization)
+            if (evalText) {
+                desc += 'h2. 🔍 专家评估 (LLM)\n\n';
+                desc += evalText + '\n\n';
+            }
         } else {
             addLog('⚠️ LLM 评估跳过: ' + (llmResult.error || '未知原因'), 'err');
             showLlmEvalStatus('skip', 'LLM 评估跳过: ' + (llmResult.error || '未知原因'));
@@ -2777,9 +3011,10 @@ function generateAndUploadDescription(tasks, planSummary, planKey) {
             body: JSON.stringify({ planKey: planKey, description: desc })
         }).then(function(r) { return r.json(); });
     });
+    });
 }
 
-function regeneratePlanDescription() {
+function regeneratePlanDescription(skipStep3) {
     // Support both browse tab and upload tab
     var planKey = '';
     var isUploadTab = false;
@@ -2815,7 +3050,7 @@ function regeneratePlanDescription() {
     updateStatus('⏳ 正在评估中...', '#2563eb');
 
     // Call updatePlanDescription which handles the full flow
-    updatePlanDescription(planKey);
+    updatePlanDescription(planKey, skipStep3);
 
     // Monitor completion via a simple polling (max 10 minutes)
     var checkCount = 0;
@@ -2825,7 +3060,7 @@ function regeneratePlanDescription() {
         if (logEl) {
             var logs = logEl.textContent;
             var elapsed = window._llmActualStartTime ? ((Date.now() - window._llmActualStartTime) / 1000).toFixed(0) : null;
-            if (logs.indexOf('Test Plan 描述已更新: ' + planKey) !== -1) {
+            if (logs.indexOf('Test Plan 描述已更新: ' + planKey) !== -1 || logs.indexOf('LLM硬件专家评估 Test Plan 完毕') !== -1) {
                 clearInterval(checkInterval);
                 if (btn) { btn.disabled = false; btn.textContent = '🧠 LLM 评估 Test Plan'; }
                 if (ubcBtn) { ubcBtn.disabled = false; ubcBtn.textContent = '🧠 LLM重新评估'; }
@@ -2886,10 +3121,18 @@ function showCreateTestCasesDialog() {
                 }
             });
         }
-        // Also add common components
-        var commonComps = ['ETH', 'HBM', 'PCIe', 'UCIe', 'Board', 'FW', 'SW', 'HW', 'System'];
-        commonComps.forEach(function(c) { compSet[c] = true; });
-        
+        // Fetch all project components from JIRA
+        return fetch('/api/testcase/components?project=' + projectKey, {
+            credentials: 'same-origin',
+            headers: authToken ? { 'Authorization': 'Bearer ' + authToken } : {}
+        }).then(function(r) { return r.json(); }).then(function(compData) {
+            if (compData.success && compData.data && compData.data.components) {
+                compData.data.components.forEach(function(c) { compSet[c] = true; });
+            }
+            return compSet;
+        });
+    })
+    .then(function(compSet) {
         compSelect.innerHTML = '<option value="">-- 选择组件 --</option>';
         Object.keys(compSet).sort().forEach(function(c) {
             compSelect.innerHTML += '<option value="' + c + '">' + c + '</option>';
@@ -2902,6 +3145,81 @@ function showCreateTestCasesDialog() {
 
 function closeCreateTestCasesDialog() {
     document.getElementById('create-tc-modal').style.display = 'none';
+}
+
+// ============ Create Sub Test Plan Dialog ============
+function showCreateSubTestPlanDialog() {
+    if (!uploadSelectedPlanKey) { alert('请先选择一个 Test Plan'); return; }
+    document.getElementById('create-stp-modal').style.display = 'flex';
+    document.getElementById('stp-dialog-assignee').value = '';
+    document.getElementById('stp-dialog-assignee').focus();
+    
+    // Load components from JIRA
+    var projectKey = document.getElementById('tc-project').value;
+    var compSelect = document.getElementById('stp-dialog-component');
+    compSelect.innerHTML = '<option value="">加载中...</option>';
+    
+    fetch('/api/testcase/components?project=' + encodeURIComponent(projectKey), {
+        credentials: 'same-origin',
+        headers: authToken ? { 'Authorization': 'Bearer ' + authToken } : {}
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        compSelect.innerHTML = '<option value="">-- 选择组件 --</option>';
+        if (data.success && data.data && data.data.components) {
+            data.data.components.sort().forEach(function(c) {
+                compSelect.innerHTML += '<option value="' + c + '">' + c + '</option>';
+            });
+        }
+    })
+    .catch(function() {
+        compSelect.innerHTML = '<option value="">-- 选择组件 --</option>';
+    });
+}
+
+function closeCreateSubTestPlanDialog() {
+    document.getElementById('create-stp-modal').style.display = 'none';
+}
+
+function confirmCreateSubTestPlan() {
+    var assignee = document.getElementById('stp-dialog-assignee').value.trim();
+    var component = document.getElementById('stp-dialog-component').value.trim();
+    
+    if (!assignee) {
+        alert('请填写负责人');
+        return;
+    }
+    
+    // Search JIRA for user match
+    var project = document.getElementById('tc-project').value || 'BR200';
+    fetch('/api/testcase/search-user?name=' + encodeURIComponent(assignee), {
+        credentials: 'same-origin',
+        headers: authToken ? { 'Authorization': 'Bearer ' + authToken } : {}
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        var matchedAssignee = assignee;
+        if (data.success && data.data && data.data.bestMatch) {
+            // Use JIRA username (name) for better matching, fallback to displayName
+            matchedAssignee = data.data.bestMatch.name || data.data.bestMatch.displayName || assignee;
+        }
+        
+        var cmd = '创建1个sub test plan,负责人为' + matchedAssignee;
+        if (component) {
+            cmd += ',组件为' + component;
+        }
+        
+        closeCreateSubTestPlanDialog();
+        fillCommand(cmd);
+    })
+    .catch(function() {
+        var cmd = '创建1个sub test plan,负责人为' + assignee;
+        if (component) {
+            cmd += ',组件为' + component;
+        }
+        closeCreateSubTestPlanDialog();
+        fillCommand(cmd);
+    });
 }
 
 function confirmCreateTestCases() {
@@ -2929,7 +3247,8 @@ function confirmCreateTestCases() {
     .then(function(data) {
         var matchedAssignee = assignee;
         if (data.success && data.data && data.data.bestMatch) {
-            matchedAssignee = data.data.bestMatch.displayName || data.data.bestMatch.name || assignee;
+            // Use JIRA username (name) for better matching, fallback to displayName
+            matchedAssignee = data.data.bestMatch.name || data.data.bestMatch.displayName || assignee;
         }
         
         // Store matched assignee and component globally

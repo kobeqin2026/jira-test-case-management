@@ -195,6 +195,63 @@ jira-testcase-manager/
 
 ## 版本历史
 
+### v1.5.0 (2026-06-25)
+基于 v1.2.0 新增以下功能：
+
+**状态批量修改**
+- 点击 Sub-task 状态列可直接修改（下拉选择目标状态）
+- 支持勾选多个 Sub-task 批量修改状态，自动获取共同可用的 transitions
+- 批量操作栏：选择目标状态 → 应用 → 保存到 JIRA
+
+**LLM 批处理并行优化**
+- 描述生成改为分批处理（每批30个 task），2路并行（Promise.all）
+- 46个 task 从 ~315秒降至 ~150秒，150个 task 约7-8分钟
+- 每批独立超时5分钟，总超时10分钟
+- prompt 精简：去掉 status/priority 字段，减少 input tokens
+
+**LLM 评估分类逻辑（动态识别）**
+- LLM 根据 Test Plan 名称和 sub-task 内容自动判断测试计划类型
+- 按该类型的专业维度分类，不强制固定分类
+- HBM测试→HBM专业维度（初始化/通道读写/PHY训练/UCIe互联等）
+- Ethernet测试→以太网维度（PHY/PCS/PMA/链路/协议等）
+- PCIe测试→PCIe维度（link up/speed/width切换/PHY FW/ECAM/BAR等）
+- UCIe测试→UCIe维度（链路建立/D2D读写/HSDCL/IODCL/IOUCIE等）
+- Board测试→板级维度（外观/时钟/阻抗/电源/接口/复位等）
+- FW测试→固件维度（BootROM/PCIe/UCIe/PMIC/Mailbox等）
+- Tool/JTAG测试→调试维度（JTAG链路/边界扫描/调试端口/Flash编程等）
+- KMD测试→内核驱动维度（设备初始化/内存管理/中断处理/Power Management等）
+- UMD测试→用户驱动维度（API调用/Context管理/Command Queue/内存分配等）
+- Diag测试→芯片诊断维度（自检流程/错误注入/故障定位/日志分析等）
+- IODIE测试→IO Die维度（IODCL链路/IOUCIE/信号完整性/Eye Diagram等）
+- BBV测试→板级上电验证维度（Board Bring-up Verification：电源/时钟/复位信号验证/芯片基本功能检查等）
+- 分类复盘：LLM评估时自动检查分类准确性，指出错误并给出修正建议
+
+**预估耗时显示**
+- LLM 处理前显示预估耗时（基于 batch 数 × 并行度）
+- 计时从 LLM 实际开始算起，未响应前显示"等待LLM响应..."
+- 两处 fetch 均添加 content-type 检查，防止超时后 HTML 解析失败
+
+**描述增强保护**
+- 上传sub-task时LLM增强：有原始描述→保留原内容+追加LLM增强（不替换）
+- 无描述→LLM生成完整描述
+
+**增量评估（不覆盖历史）**
+- 同一Test Plan再次上传新sub-task时，保留已有LLM评估
+- 已有评估作为上下文传入LLM，结合新旧sub-task生成更新后的综合评估
+- 不会覆盖之前的评估内容
+- 描述分类结构保留：已有分类不变，只对新增sub-task分类并插入
+
+**组件Filter全量显示**
+- 组件筛选下拉框显示项目所有JIRA组件（不再仅显示已使用的）
+- 批量创建对话框的组件下拉也从JIRA API获取全量组件
+
+**界面优化**
+- Sub-Test Plans 显示 "Total x cases"（去掉 Opened 状态）
+- 组件分布柱状图顶部显示 "已完成/总数" 数值标签
+- Nginx proxy_read_timeout 从 180s 提升至 900s
+- 修复 uploadAiResults 未映射 components 字段导致 sub-task 组件为空
+- 修复 transitions API 响应格式不匹配（前端 data.data vs 后端 data.data.transitions）
+
 ### v1.2.0 (2026-06-24)
 基于 v1.0.0 新增以下功能：
 - **LLM描述增强优化**：保留原始描述，补充测试目的和期望预期

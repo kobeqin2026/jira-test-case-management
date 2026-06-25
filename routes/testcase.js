@@ -660,7 +660,7 @@ router.post('/transition', auth.authenticateToken, async function(req, res) {
  */
 router.post('/transition-batch', auth.authenticateToken, async function(req, res) {
     try {
-        var items = req.body.items || [];
+        var items = req.body.transitions || req.body.items || [];
         var results = [];
         var errors = [];
         var userPat = req.user.jiraPat || '';
@@ -726,6 +726,26 @@ router.get('/testplans', auth.authenticateToken, async function(req, res) {
         });
     } catch (error) {
         console.error('[TestCase] Get test plans error:', error.message);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+/**
+ * GET /api/testcase/components?project=XXX
+ * Get all components for a JIRA project
+ */
+router.get('/components', auth.authenticateToken, async function(req, res) {
+    try {
+        var projectKey = sanitizeKey(req.query.project);
+        if (!projectKey) return res.status(400).json({ success: false, error: 'project为必填项' });
+
+        var userPat = req.user.jiraPat || '';
+        var apiPath = '/rest/api/2/project/' + projectKey + '/components';
+        var result = await jiraRequest('GET', apiPath, null, userPat);
+        var components = (result || []).map(function(c) { return c.name; });
+        res.json({ success: true, data: { components: components } });
+    } catch (error) {
+        console.error('[TestCase] Get components error:', error.message);
         res.status(500).json({ success: false, error: error.message });
     }
 });
@@ -1064,20 +1084,46 @@ router.post('/testplan/llm-evaluate', auth.authenticateToken, async function(req
                 return (i + 1) + '. [' + t.key + '] ' + (t.summary || '') + (desc ? ' — ' + desc : ' (无描述)') + ' [' + (t.status || 'N/A') + '] [' + (t.priority || 'N/A') + ']';
             }).join('\n');
 
-            var evalSystemPrompt = '你是一位资深的硬件测试专家，专注于GPU/UCIe/PCIe/HBM高速接口芯片的验证与测试。' +
+            var evalSystemPrompt = '你是一位资深的GPGPU芯片硬件测试专家，专注于GPU/UCIe/PCIe/HBM高速接口芯片的验证与测试。' +
                 '你擅长分析测试计划的完整性、覆盖度和风险点。' +
-                '请根据提供的测试用例列表，给出专业的评估意见。' +
+                '请根据提供的Test Plan名称和测试用例列表，给出专业的评估意见。' +
                 '评估内容包括：' +
-                '1. 测试覆盖度评估：当前用例覆盖了哪些关键测试场景，是否有明显遗漏' +
-                '2. 测试重点分析：哪些是核心验证点，优先级是否合理' +
-                '3. 风险与建议：潜在的测试盲区、建议补充的测试场景' +
-                '4. 整体评价：一句话总结测试计划的质量水平' +
+                '1. 分类复盘：检查Test Plan描述中的分类是否准确，每个sub-task是否归入了正确的类别。如果有分类错误，直接给出修正后的正确分类（列出正确的类别名和对应的sub-task）。' +
+                '2. 测试覆盖度评估：当前用例覆盖了哪些关键测试场景，是否有明显遗漏' +
+                '3. 测试重点分析：哪些是核心验证点，优先级是否合理' +
+                '4. 风险与建议：潜在的测试盲区、建议补充的测试场景' +
+                '5. 整体评价：一句话总结测试计划的质量水平' +
+                '分类规则：' +
+                '首先根据Test Plan名称和sub-task内容判断测试计划的类型（如HBM测试、Ethernet测试、Board测试、FW测试、PCIe测试、KMD测试、Tool测试等），' +
+                '然后按照该类型的专业维度对测试用例进行分类。分类必须贴合该领域的实际测试场景，不要生搬硬套其他领域的分类。' +
+                '例如：HBM测试计划应按HBM专业维度分类（初始化/通道读写/PHY训练/UCIe互联等）；' +
+                'Ethernet测试计划应按以太网专业维度分类（PHY/PCS/PMA/链路/协议等）；' +
+                'Board测试计划应按板级测试维度分类（外观/时钟/阻抗/电源/接口/复位等）；' +
+                'KMD测试计划应按内核驱动维度分类（内存管理/命令处理/计算单元/中断控制/网络通信等）；' +
+                'Tool测试计划应按工具维度分类（JTAG/调试/DFT/固件/寄存器等）。' +
+                '没有用例的类别可省略。' +
                 '请用中文回答，格式清晰，使用JIRA wiki markup格式（h3. 标题，*加粗*，- 列表等）。' +
-                '保持简洁专业，控制在300字以内。';
+                '保持简洁专业，控制在400字以内。';
 
             var evalUserPrompt = 'Test Plan: ' + planKey + ' - ' + planSummary + '\n\n';
             evalUserPrompt += '测试用例列表（共 ' + tasks.length + ' 项）：\n';
             evalUserPrompt += taskList;
+
+            // Include existing description for categorization review
+            var existingDesc = body.existingDescription || '';
+            if (existingDesc) {
+                evalUserPrompt += '\n\n--- 当前Test Plan描述（请复盘其中的分类是否准确）---\n';
+                evalUserPrompt += existingDesc;
+                evalUserPrompt += '\n--- 描述结束 ---\n';
+            }
+
+            // Include existing evaluation as context if available
+            var existingEval = body.existingEvaluation || '';
+            if (existingEval) {
+                evalUserPrompt += '\n\n--- 之前的评估（请参考并在其基础上更新，如有新增测试用例请补充到评估中）---\n';
+                evalUserPrompt += existingEval;
+                evalUserPrompt += '\n--- 之前的评估结束 ---\n';
+            }
 
             console.log('[TestCase-LLMEval] Evaluating plan:', planKey, 'tasks:', tasks.length);
 
@@ -1222,7 +1268,7 @@ router.post('/ai-generate', auth.authenticateToken, async function(req, res) {
             return res.status(500).json({ success: false, error: 'LLM API not configured' });
         }
 
-        var systemPrompt = 'You are a JIRA test management assistant. Parse natural language into JIRA issue creation. Rules: 1) Sub test plan -> issuetype Test Plan (with parentKey set), priority Highest 2) Test case/sub-task -> issuetype Sub-task, priority Highest 3) Top-level test plan -> issuetype Test Plan, priority Highest 4) Count as specified 5) Each has summary+description 6) Default priority Highest unless specified 7) If user mentions assignee (负责人), include assignee field with JIRA username. Available issue types: Test Plan, Task, Sub-task. Return: { "actions": [{ "action": "create", "summary": "title", "description": "desc", "issuetype": "Test Plan or Sub-task", "priority": "Highest", "labels": "", "assignee": "" }] }';
+        var systemPrompt = 'You are a JIRA test management assistant. Parse natural language into JIRA issue creation. Rules: 1) Sub test plan -> issuetype Test Plan, MUST include parentKey field with the parent Test Plan key, priority Highest 2) Test case/sub-task -> issuetype Sub-task, MUST include parentKey, priority Highest 3) Top-level test plan -> issuetype Test Plan, priority Highest 4) Count as specified 5) Each has summary+description 6) Default priority Highest unless specified 7) If user mentions assignee (负责人), include assignee field with JIRA username. 8) If user mentions component (组件), include components field. Available issue types: Test Plan, Task, Sub-task. Return: { "actions": [{ "action": "create", "summary": "title", "description": "desc", "issuetype": "Test Plan or Sub-task", "priority": "Highest", "labels": "", "assignee": "", "components": "", "parentKey": "" }] }';
 
         var userPrompt = 'Project: ' + project + '\n';
         if (parentKey) userPrompt += 'Current Test Plan: ' + parentKey + ' - ' + parentSummary + '\n';
@@ -1285,7 +1331,8 @@ router.post('/ai-generate', auth.authenticateToken, async function(req, res) {
                 labels: action.labels || '',
                 issuetype: action.issuetype || 'Sub-task',
                 parentKey: action.parentKey || parentKey,
-                assignee: action.assignee || ''
+                assignee: action.assignee || '',
+                components: action.components || ''
             };
         });
 
