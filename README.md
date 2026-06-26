@@ -195,6 +195,22 @@ jira-testcase-manager/
 
 ## 版本历史
 
+### v1.5.1 (2026-06-26)
+基于 v1.5.0 新增以下功能：
+
+**LLM 智能分类替代关键词匹配**
+- Test Plan 描述生成中的分类逻辑从硬编码关键词匹配改为 LLM 动态分类
+- 旧方式：前端按 planSummary 关键词（ethernet/board/hbm/默认）选择固定分类数组，逐条匹配 task 文本
+- 新方式：调用后端 `mode: 'categorize'` 接口，LLM 根据 Test Plan 名称 + 所有 sub-task 内容自动判断测试计划类型并按该领域专业维度分类
+- 分类准确度大幅提升，不再受限于预定义关键词覆盖率
+- 分类结果自动格式化为 JIRA wiki markup 表格（含类别名、用例数、描述）
+- 专家评估阶段的分类复盘逻辑同步优化：分类修正直接反映在描述中，评估文本仅保留专业分析部分
+
+**流程简化**
+- `generateAndUploadDescription()` 重构：先分类（LLM categorize），再评估（LLM evaluate），最后写回 JIRA
+- 移除了旧版本中的冗余 promise chain 和不可达代码
+- 前端版本 v65
+
 ### v1.5.0 (2026-06-25)
 基于 v1.2.0 新增以下功能：
 

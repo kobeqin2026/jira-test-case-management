@@ -1077,6 +1077,65 @@ router.post('/testplan/llm-evaluate', auth.authenticateToken, async function(req
             var totalTime = ((Date.now() - startTime) / 1000).toFixed(1);
             console.log('[TestCase-LLMEval] All done in', totalTime, 's, total descriptions:', Object.keys(allDescriptions).length);
             res.json({ success: true, data: { descriptions: allDescriptions, batchCount: totalBatches, concurrency: CONCURRENCY } });
+        } else if (body.mode === 'categorize') {
+            // Mode: Categorize tasks using LLM (returns categorized description)
+            var taskList = tasks.map(function(t, i) {
+                var desc = (t.description || '').substring(0, 200);
+                return (i + 1) + '. [' + t.key + '] ' + (t.summary || '') + (desc ? ' — ' + desc : ' (无描述)');
+            }).join('\n');
+
+            var catSystemPrompt = '你是一位资深的GPGPU芯片硬件测试专家，专注于GPU/UCIe/PCIe/HBM高速接口芯片的验证与测试。' +
+                '请根据提供的Test Plan名称和测试用例列表，将测试用例按专业维度分类。' +
+                '分类规则：' +
+                '首先根据Test Plan名称和sub-task内容判断测试计划的类型（如HBM测试、Ethernet测试、Board测试、FW测试、PCIe测试、KMD测试、Tool测试、BBV测试、IODie测试等），' +
+                '然后按照该类型的专业维度对测试用例进行分类。分类必须贴合该领域的实际测试场景。' +
+                '例如：HBM测试计划应按HBM专业维度分类；Ethernet测试计划应按以太网专业维度分类；BBV测试计划应按板级验证维度分类。' +
+                '没有用例的类别可省略。' +
+                '请用JSON格式返回，格式如下：{ "categories": [{ "name": "类别名", "items": [{ "key": "BR200-xxx", "summary": "标题", "description": "简短描述" }] }] }' +
+                '保持描述简洁，每条不超过100字。';
+
+            var catUserPrompt = 'Test Plan: ' + planKey + ' - ' + planSummary + '\n\n';
+            catUserPrompt += '测试用例列表（共 ' + tasks.length + ' 项）：\n';
+            catUserPrompt += taskList;
+
+            console.log('[TestCase-LLMEval] Categorizing plan:', planKey, 'tasks:', tasks.length);
+            var catContent = await callLLM(catSystemPrompt, catUserPrompt, 2000);
+
+            // Parse JSON response
+            var categorized = null;
+            try { categorized = JSON.parse(catContent); } catch (_) {}
+            if (!categorized) {
+                var stripped = catContent.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
+                try { categorized = JSON.parse(stripped); } catch (_) {}
+            }
+            if (!categorized) {
+                var jsonMatch = catContent.match(/\{[\s\S]*\}/);
+                if (jsonMatch) { try { categorized = JSON.parse(jsonMatch[0]); } catch (_) {} }
+            }
+
+            if (categorized && categorized.categories) {
+                // Build JIRA wiki format description
+                var desc = 'h2. Test Summary\n\n';
+                desc += planSummary + '，共 ' + tasks.length + ' 项测试用例。\n\n';
+                var catIdx = 1;
+                categorized.categories.forEach(function(cat) {
+                    if (!cat.items || cat.items.length === 0) return;
+                    desc += 'h2. ' + catIdx + '. ' + cat.name + ' (' + cat.items.length + '项)\n\n';
+                    desc += '||用例||描述||\n';
+                    cat.items.forEach(function(item) {
+                        var descText = item.description || item.summary || '';
+                        if (descText.length > 120) descText = descText.substring(0, 120).replace(/\s+\S*$/, '') + '...';
+                        descText = descText.replace(/\|/g, '\\|').replace(/\n/g, ' ');
+                        desc += '|' + item.key + ' ' + (item.summary || '') + '|' + descText + '|\n';
+                    });
+                    desc += '\n';
+                    catIdx++;
+                });
+                res.json({ success: true, data: { description: desc, categories: categorized.categories } });
+            } else {
+                console.error('[TestCase-LLMEval] Categorize parse failed:', catContent.substring(0, 500));
+                res.status(500).json({ success: false, error: 'LLM categorization format error', raw: catContent.substring(0, 500) });
+            }
         } else {
             // Mode: Evaluate test plan as hardware testing expert (single call)
             var taskList = tasks.map(function(t, i) {
