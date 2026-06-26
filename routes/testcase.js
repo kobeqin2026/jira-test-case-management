@@ -800,6 +800,32 @@ router.post('/testplan', auth.authenticateToken, async function(req, res) {
 });
 
 /**
+ * GET /api/testcase/testplan/description
+ * Get a test plan's current description from JIRA
+ * Query: planKey
+ */
+router.get('/testplan/description', auth.authenticateToken, async function(req, res) {
+    try {
+        var planKey = sanitizeKey(req.query.planKey);
+        if (!planKey) {
+            return res.status(400).json({ success: false, error: 'planKey为必填项' });
+        }
+
+        var userPat = req.user.jiraPat || '';
+        var jiraResult = await jiraRequest('GET', '/rest/api/2/issue/' + planKey + '?fields=description', null, userPat);
+
+        if (jiraResult && jiraResult.fields) {
+            res.json({ success: true, data: { description: jiraResult.fields.description || '' } });
+        } else {
+            res.json({ success: false, error: '无法获取 Issue 描述' });
+        }
+    } catch (error) {
+        console.error('[TestCase] Get description error:', error.message);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+/**
  * PUT /api/testcase/testplan/description
  * Update a test plan's description with summary of linked sub-tasks
  * Body: { planKey, description }
