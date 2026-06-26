@@ -216,10 +216,16 @@ jira-testcase-manager/
 - 分类结果自动格式化为 JIRA wiki markup 表格（含类别名、用例数、描述）
 - 专家评估阶段的分类复盘逻辑同步优化：分类修正直接反映在描述中，评估文本仅保留专业分析部分
 
+**批量新建 Sub Test Plan**
+- "新建Sub Test Plan" 和 "批量新建Sub Test Plan" 按钮均弹出 dialog 填写负责人和组件
+- 命令格式灵活：用户可自由输入数量（如"创建3个sub test plan"）
+- 前端后处理：命令含 "sub test plan" 时自动修正 issuetype 为 "Test Plan"
+- 组件 fallback：LLM 未返回组件时从命令文本提取
+
 **流程简化**
 - `generateAndUploadDescription()` 重构：先分类（LLM categorize），再评估（LLM evaluate），最后写回 JIRA
 - 移除了旧版本中的冗余 promise chain 和不可达代码
-- 前端版本 v65
+- 前端版本 v69
 
 ### v1.5.0 (2026-06-25)
 基于 v1.2.0 新增以下功能：

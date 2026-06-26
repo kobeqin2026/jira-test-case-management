@@ -565,7 +565,7 @@
                         <span style="font-size:12px; color:#999;">快捷指令：</span>
                         <button class="btn btn-outline btn-sm" onclick="showCreateSubTestPlanDialog()">➕ 新建Sub Test Plan</button>
                         <button class="btn btn-outline btn-sm" onclick="showCreateTestCasesDialog()">📋 批量创建测试用例</button>
-                        <button class="btn btn-outline btn-sm" onclick="fillCommand('创建3个sub test plan')">➕ 批量新建Sub Test Plan</button>
+                        <button class="btn btn-outline btn-sm" onclick="showCreateSubTestPlanDialog()">➕ 批量新建Sub Test Plan</button>
                     </div>
                     <div class="ai-status" id="ai-status"></div>
                     <div class="ai-result-actions">
@@ -657,7 +657,7 @@
 <!-- Create Sub Test Plan Modal -->
     <div class="login-overlay" id="create-stp-modal" style="display:none;">
         <div class="login-box" style="width:420px;">
-            <h2>➕ 新建 Sub Test Plan</h2>
+            <h2 id="stp-dialog-title">➕ 新建 Sub Test Plan</h2>
             <p style="font-size:13px; color:#666; margin-bottom:16px;">请填写负责人和组件信息</p>
             <div style="margin-bottom:12px;">
                 <label style="display:block; font-size:13px; font-weight:600; color:#555; margin-bottom:4px;">负责人 *</label>
@@ -743,6 +743,6 @@
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
-    <script src="/js/testcase-upload.js?v=66"></script>
+    <script src="/js/testcase-upload.js?v=69"></script>
 </body>
 </html>

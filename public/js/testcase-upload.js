@@ -2145,6 +2145,22 @@ function generateWithAI() {
     .then(function(data) {
         if (data.success && data.data && data.data.actions) {
             aiGeneratedIssues = data.data.actions;
+            // Fix issuetype: if command mentions "sub test plan", force issuetype to "Test Plan"
+            var command = document.getElementById('ai-prompt').value;
+            var cmdLower = command.toLowerCase();
+            if (cmdLower.indexOf('sub test plan') !== -1 || cmdLower.indexOf('sub-test plan') !== -1) {
+                aiGeneratedIssues.forEach(function(action) {
+                    action.issuetype = 'Test Plan';
+                });
+            }
+            // Fallback: extract components/assignee from command if LLM didn't return them
+            var cmdCompMatch = command.match(/组件[为是:：]\s*(.+?)(?:[,，]|$)/);
+            var cmdComp = cmdCompMatch ? cmdCompMatch[1].trim() : '';
+            aiGeneratedIssues.forEach(function(action) {
+                if (!action.components && cmdComp) {
+                    action.components = cmdComp;
+                }
+            });
             // Post-process: match assignees to JIRA users and normalize components
             var project = document.getElementById('tc-project').value || 'BR200';
             var matchPromises = aiGeneratedIssues.map(function(action) {
@@ -3012,11 +3028,10 @@ function confirmCreateSubTestPlan() {
     .then(function(data) {
         var matchedAssignee = assignee;
         if (data.success && data.data && data.data.bestMatch) {
-            // Use JIRA username (name) for better matching, fallback to displayName
             matchedAssignee = data.data.bestMatch.name || data.data.bestMatch.displayName || assignee;
         }
         
-        var cmd = '创建1个sub test plan,负责人为' + matchedAssignee;
+        var cmd = '负责人为' + matchedAssignee;
         if (component) {
             cmd += ',组件为' + component;
         }
@@ -3025,7 +3040,7 @@ function confirmCreateSubTestPlan() {
         fillCommand(cmd);
     })
     .catch(function() {
-        var cmd = '创建1个sub test plan,负责人为' + assignee;
+        var cmd = '负责人为' + assignee;
         if (component) {
             cmd += ',组件为' + component;
         }
