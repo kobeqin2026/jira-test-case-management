@@ -2798,7 +2798,13 @@ function generateAndUploadDescription(tasks, planSummary, planKey) {
                             desc += evalText + '\n\n';
                         }
                     } else {
-                        addLog('⚠️ LLM 评估跳过: ' + (llmResult.error || '未知原因'), 'err');
+                        addLog('⚠️ LLM 评估跳过: ' + (llmResult.error || '未知原因') + '，保留已有评估', 'err');
+                        // Preserve existing evaluation when LLM fails
+                        if (existingEval) {
+                            desc += 'h2. 🔍 专家评估 (LLM)\n\n';
+                            desc += existingEval + '\n\n';
+                            addLog('♻️ 已恢复之前的专家评估内容', 'ok');
+                        }
                     }
 
                     // Update plan description
