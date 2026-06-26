@@ -225,7 +225,7 @@ jira-testcase-manager/
 **流程简化**
 - `generateAndUploadDescription()` 重构：先分类（LLM categorize），再评估（LLM evaluate），最后写回 JIRA
 - 移除了旧版本中的冗余 promise chain 和不可达代码
-- 前端版本 v69
+- 前端版本 v72
 
 ### v1.5.0 (2026-06-25)
 基于 v1.2.0 新增以下功能：

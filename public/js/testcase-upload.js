@@ -1928,6 +1928,7 @@ function createTestPlan() {
 var aiGeneratedIssues = [];
 var _dialogAssignee = '';
 var _dialogComponent = '';
+var _createMode = ''; // 'subtestplan' when user clicked "批量新建Sub Test Plan"
 
 function fillCommand(text) {
     document.getElementById('ai-prompt').value = text;
@@ -2086,10 +2087,15 @@ function generateWithAI() {
         
         // Apply assignee and component to all issues
         aiGeneratedIssues = window._pendingPasteIssues.map(function(issue) {
-            return Object.assign({}, issue, { 
-                assignee: assignee || issue.assignee || '',
-                components: component || issue.components || ''
+            var fixed = Object.assign({}, issue, { 
+                assignee: assignee || issue.assignee || '', 
+                components: component || issue.components || '' 
             });
+            // Fix issuetype: if user clicked "批量新建Sub Test Plan", force to "Test Plan"
+            if (_createMode === 'subtestplan') {
+                fixed.issuetype = 'Test Plan';
+            }
+            return fixed;
         });
         // Reset dialog values
         _dialogAssignee = '';
@@ -2145,16 +2151,17 @@ function generateWithAI() {
     .then(function(data) {
         if (data.success && data.data && data.data.actions) {
             aiGeneratedIssues = data.data.actions;
-            // Fix issuetype: if command mentions "sub test plan", force issuetype to "Test Plan"
-            var command = document.getElementById('ai-prompt').value;
-            var cmdLower = command.toLowerCase();
-            if (cmdLower.indexOf('sub test plan') !== -1 || cmdLower.indexOf('sub-test plan') !== -1) {
+            // Fix issuetype: if user clicked "批量新建Sub Test Plan" or command mentions it, force to "Test Plan"
+            var cmdLower = document.getElementById('ai-prompt').value.toLowerCase();
+            if (_createMode === 'subtestplan' || cmdLower.indexOf('sub test plan') !== -1 || cmdLower.indexOf('sub-test plan') !== -1) {
                 aiGeneratedIssues.forEach(function(action) {
                     action.issuetype = 'Test Plan';
                 });
             }
+            _createMode = '';
             // Fallback: extract components/assignee from command if LLM didn't return them
-            var cmdCompMatch = command.match(/组件[为是:：]\s*(.+?)(?:[,，]|$)/);
+            var cmdText = document.getElementById('ai-prompt').value;
+            var cmdCompMatch = cmdText.match(/组件[为是:：]\s*(.+?)(?:[,，]|$)/);
             var cmdComp = cmdCompMatch ? cmdCompMatch[1].trim() : '';
             aiGeneratedIssues.forEach(function(action) {
                 if (!action.components && cmdComp) {
@@ -3017,6 +3024,10 @@ function confirmCreateSubTestPlan() {
         alert('请填写负责人');
         return;
     }
+    
+    // Store in global for paste path to use
+    _dialogAssignee = assignee;
+    _dialogComponent = component;
     
     // Search JIRA for user match
     var project = document.getElementById('tc-project').value || 'BR200';
