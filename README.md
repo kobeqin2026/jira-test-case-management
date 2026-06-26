@@ -222,10 +222,15 @@ jira-testcase-manager/
 - 前端后处理：命令含 "sub test plan" 时自动修正 issuetype 为 "Test Plan"
 - 组件 fallback：LLM 未返回组件时从命令文本提取
 
+**三层递归层级支持**
+- Test Case 库支持3层递归遍历：父Plan → L1链接Plan → L2链接Plan → sub-task
+- "关联的 Sub-Test Plans"只显示L1链接Plan（带层级缩进）
+- Total case统计遍历3层所有sub-task（去重，排除父自身循环）
+
 **流程简化**
 - `generateAndUploadDescription()` 重构：先分类（LLM categorize），再评估（LLM evaluate），最后写回 JIRA
 - 移除了旧版本中的冗余 promise chain 和不可达代码
-- 前端版本 v72
+- 前端版本 v74
 
 ### v1.5.0 (2026-06-25)
 基于 v1.2.0 新增以下功能：

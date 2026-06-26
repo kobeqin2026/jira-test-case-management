@@ -866,56 +866,89 @@ router.get('/testplan/linked-tasks/:planKey', auth.authenticateToken, async func
             // Get plan summary
             var planResult = await jiraRequest('GET', '/rest/api/2/issue/' + planKey + '?fields=issuelinks,summary', null, userPat);
 
-            var linkedPlanKeys = []; // linked Test Plans (sub-plans)
-            var allSubtaskKeys = []; // all sub-tasks across all plans
+            var allSubtaskKeys = []; // all sub-tasks across all plans (3 levels)
+            var allLinkedPlans = []; // only L1 linked plans for display
 
-            // 1. Collect linked issues via issuelinks
-            if (planResult.fields.issuelinks) {
-                planResult.fields.issuelinks.forEach(function(l) {
-                    if (l.outwardIssue) linkedPlanKeys.push(l.outwardIssue.key);
-                    if (l.inwardIssue) linkedPlanKeys.push(l.inwardIssue.key);
-                });
-            }
-
-            // 2. Collect direct sub-tasks (children) of the parent plan via JQL parent=
-            try {
-                var subJql = 'parent = ' + planKey + ' ORDER BY created ASC';
-                var subResult = await jiraRequest('GET', '/rest/api/2/search?jql=' + encodeURIComponent(subJql) + '&fields=summary,status,issuetype,priority,description,assignee,labels,components&maxResults=200', null, userPat);
-                if (subResult && subResult.issues) {
-                    subResult.issues.forEach(function(issue) {
-                        if (allSubtaskKeys.indexOf(issue.key) === -1) {
-                            allSubtaskKeys.push(issue.key);
-                        }
-                    });
-                }
-            } catch (e) {
-                console.error('[TestCase] Sub-task search error:', e.message);
-            }
-
-            // 3. For each linked plan, also collect its sub-tasks
-            if (linkedPlanKeys.length > 0) {
+            // Helper: get issuelinks for a plan
+            async function getLinkedPlanKeys(pKey) {
                 try {
-                    var linkedSubJql = 'parent in (' + linkedPlanKeys.join(',') + ') ORDER BY created ASC';
-                    var linkedSubResult = await jiraRequest('GET', '/rest/api/2/search?jql=' + encodeURIComponent(linkedSubJql) + '&fields=summary,status,issuetype,priority,description,assignee,labels,components,parent&maxResults=500', null, userPat);
-                    if (linkedSubResult && linkedSubResult.issues) {
-                        linkedSubResult.issues.forEach(function(issue) {
-                            if (allSubtaskKeys.indexOf(issue.key) === -1) {
-                                allSubtaskKeys.push(issue.key);
-                            }
+                    var r = await jiraRequest('GET', '/rest/api/2/issue/' + pKey + '?fields=issuelinks', null, userPat);
+                    var keys = [];
+                    if (r && r.fields && r.fields.issuelinks) {
+                        r.fields.issuelinks.forEach(function(l) {
+                            if (l.outwardIssue) keys.push(l.outwardIssue.key);
+                            if (l.inwardIssue) keys.push(l.inwardIssue.key);
                         });
                     }
-                    console.log('[TestCase] Linked plans sub-tasks:', linkedPlanKeys.length, 'plans,', allSubtaskKeys.length, 'total sub-tasks');
-                } catch (e) {
-                    console.error('[TestCase] Linked plans sub-task search error:', e.message);
+                    return keys;
+                } catch (e) { return []; }
+            }
+
+            // Helper: get sub-tasks (children) for a plan
+            async function getSubTaskKeys(pKey) {
+                try {
+                    var jql = 'parent = ' + pKey + ' ORDER BY created ASC';
+                    var r = await jiraRequest('GET', '/rest/api/2/search?jql=' + encodeURIComponent(jql) + '&fields=summary,status,issuetype,priority,description,assignee,labels,components,parent&maxResults=200', null, userPat);
+                    var keys = [];
+                    if (r && r.issues) {
+                        r.issues.forEach(function(issue) {
+                            if (keys.indexOf(issue.key) === -1) keys.push(issue.key);
+                        });
+                    }
+                    return keys;
+                } catch (e) { return []; }
+            }
+
+            // Level 1: linked plans of parent
+            var level1Keys = await getLinkedPlanKeys(planKey);
+            // Exclude parent itself from linked plans
+            level1Keys = level1Keys.filter(function(k) { return k !== planKey; });
+            // Level 1: direct sub-tasks of parent
+            var level1SubKeys = await getSubTaskKeys(planKey);
+            level1SubKeys.forEach(function(k) { if (allSubtaskKeys.indexOf(k) === -1) allSubtaskKeys.push(k); });
+
+            // Track all seen plan keys to avoid duplicates
+            var seenPlanKeys = {};
+            seenPlanKeys[planKey] = true;
+
+            // Fetch info for level 1 linked plans
+            for (var i = 0; i < level1Keys.length; i++) {
+                if (seenPlanKeys[level1Keys[i]]) continue;
+                seenPlanKeys[level1Keys[i]] = true;
+                try {
+                    var lr = await jiraRequest('GET', '/rest/api/2/issue/' + level1Keys[i] + '?fields=summary,issuetype', null, userPat);
+                    allLinkedPlans.push({ key: level1Keys[i], summary: lr.fields.summary, issuetype: lr.fields.issuetype.name, level: 1, parentKey: planKey });
+                } catch (e) {}
+            }
+
+            // Level 2: for each level 1 linked plan, get its sub-tasks and linked plans
+            var level2PlanKeys = [];
+            for (var i = 0; i < level1Keys.length; i++) {
+                var subKeys = await getSubTaskKeys(level1Keys[i]);
+                subKeys.forEach(function(k) { if (allSubtaskKeys.indexOf(k) === -1) allSubtaskKeys.push(k); });
+
+                var linked2Keys = await getLinkedPlanKeys(level1Keys[i]);
+                for (var j = 0; j < linked2Keys.length; j++) {
+                    if (seenPlanKeys[linked2Keys[j]]) continue;
+                    seenPlanKeys[linked2Keys[j]] = true;
+                    level2PlanKeys.push(linked2Keys[j]);
+                    // L2 plans not added to display list, only for sub-task collection
                 }
             }
 
-            if (allSubtaskKeys.length === 0) {
-                return res.json({ success: true, data: { tasks: [], planSummary: planResult.fields.summary } });
+            // Level 3: for each level 2 linked plan, get its sub-tasks
+            for (var i = 0; i < level2PlanKeys.length; i++) {
+                var subKeys3 = await getSubTaskKeys(level2PlanKeys[i]);
+                subKeys3.forEach(function(k) { if (allSubtaskKeys.indexOf(k) === -1) allSubtaskKeys.push(k); });
+            }
+
+            console.log('[TestCase] Linked-tasks:', planKey, '- L1 links:', level1Keys.length, ', L2 links:', level2PlanKeys.length, ', total sub-tasks:', allSubtaskKeys.length, ', linked plans:', allLinkedPlans.length);
+
+            if (allSubtaskKeys.length === 0 && allLinkedPlans.length === 0) {
+                return res.json({ success: true, data: { tasks: [], linkedPlans: [], planSummary: planResult.fields.summary } });
             }
 
             // Fetch details of all found sub-tasks
-            // JQL 'key in (...)' has a limit, so batch if needed
             var allTasks = [];
             var batchSize = 50;
             for (var i = 0; i < allSubtaskKeys.length; i += batchSize) {
@@ -949,7 +982,8 @@ router.get('/testplan/linked-tasks/:planKey', auth.authenticateToken, async func
                 data: {
                     planKey: planKey,
                     planSummary: planResult.fields.summary,
-                    tasks: allTasks
+                    tasks: allTasks,
+                    linkedPlans: allLinkedPlans
                 }
             });
         } catch (error) {

@@ -588,59 +588,23 @@ function selectParent(key) {
     document.getElementById('dist-row').innerHTML = '';
     linkedPlans = [];
 
-    // Step 1: Fetch issue details (links)
-    fetch('/api/testcase/issue/' + key, {
+    // Use linked-tasks endpoint (supports 3-level recursion)
+    fetch('/api/testcase/testplan/linked-tasks/' + key, {
         credentials: 'same-origin',
         headers: authToken ? { 'Authorization': 'Bearer ' + authToken } : {}
     })
     .then(function(r) { return r.json(); })
     .then(function(data) {
         if (!data.success || !data.data) throw new Error(data.error || '加载失败');
-        var issue = data.data;
 
-        // Find linked Test Plans
-        linkedPlans = (issue.links || []).filter(function(l) {
-            return l.issuetype === 'Test Plan' || l.issuetype === 'Task';
-        });
-
-        // Step 2: Fetch direct sub-tasks
-        var project = document.getElementById('browse-project').value;
-        return fetch('/api/testcase/search?project=' + encodeURIComponent(project) + '&issuetype=Sub-task&parent=' + key + '&maxResults=200', {
-            credentials: 'same-origin',
-            headers: authToken ? { 'Authorization': 'Bearer ' + authToken } : {}
-        });
-    })
-    .then(function(r) { return r.json(); })
-    .then(function(data) {
-        subtasks = (data.success && data.data) ? (data.data.issues || []) : [];
-
-        // Step 3: Fetch sub-tasks for each linked plan
-        var fetches = linkedPlans.map(function(lp) {
-            var project = document.getElementById('browse-project').value;
-            return fetch('/api/testcase/search?project=' + encodeURIComponent(project) + '&issuetype=Sub-task&parent=' + lp.key + '&maxResults=200', {
-                credentials: 'same-origin',
-                headers: authToken ? { 'Authorization': 'Bearer ' + authToken } : {}
-            })
-            .then(function(r) { return r.json(); })
-            .then(function(d) {
-                lp.subtasks = (d.success && d.data) ? (d.data.issues || []) : [];
-            });
-        });
-
-        return Promise.all(fetches);
-    })
-    .then(function() {
-        // Merge all sub-tasks
-        var allSubtasks = subtasks.slice();
-        linkedPlans.forEach(function(lp) {
-            lp.subtasks.forEach(function(st) { allSubtasks.push(st); });
-        });
+        subtasks = data.data.tasks || [];
+        linkedPlans = data.data.linkedPlans || [];
 
         renderLinkedPlans(linkedPlans);
-        renderKPI(allSubtasks);
-        renderDistributions(allSubtasks);
+        renderKPI(subtasks);
+        renderDistributions(subtasks);
         initPendingPieCharts();
-        renderDetailTable(allSubtasks);
+        renderDetailTable(subtasks);
     })
     .catch(function(e) {
         document.getElementById('detail-section').innerHTML = '<div class="empty-state"><p>加载失败: ' + e.message + '</p></div>';
@@ -652,15 +616,25 @@ function renderLinkedPlans(plans) {
     var oldSection = document.getElementById('linked-plans-section');
     if (oldSection) oldSection.remove();
     if (plans.length === 0) return;
+    // Count sub-tasks per plan
+    var planCounts = {};
+    subtasks.forEach(function(t) {
+        var p = t.parent || '';
+        if (p) planCounts[p] = (planCounts[p] || 0) + 1;
+    });
     var html = '<div class="card" style="margin-bottom:16px; padding:14px; background:#f8f9fa;">';
     html += '<div style="font-size:13px; color:#555; font-weight:600; margin-bottom:8px;">📎 关联的 Sub-Test Plans</div>';
     plans.forEach(function(lp) {
         var typeClass = lp.issuetype === 'Test Plan' ? 'pc-type-testplan' : 'pc-type-task';
-        html += '<div style="display:flex; align-items:center; gap:8px; padding:6px 0; border-bottom:1px solid #eee;">';
+        var indent = lp.level === 2 ? 'margin-left:24px;' : '';
+        var prefix = lp.level === 2 ? '└─ ' : '';
+        var count = planCounts[lp.key] || 0;
+        html += '<div style="display:flex; align-items:center; gap:8px; padding:6px 0; border-bottom:1px solid #eee; ' + indent + '">';
+        html += '<span style="font-size:12px; color:#999;">' + prefix + '</span>';
         html += '<a href="https://jira01.birentech.com/browse/' + lp.key + '" target="_blank" style="font-weight:600; color:#3498db; text-decoration:none;">' + lp.key + '</a>';
         html += '<span class="pc-type ' + typeClass + '" style="font-size:10px;">' + lp.issuetype + '</span>';
         html += '<span style="font-size:13px; color:#333; flex:1;">' + escapeHtml(lp.summary) + '</span>';
-        html += '<span style="font-size:12px; color:#27ae60; font-weight:600;">Total ' + (lp.subtasks ? lp.subtasks.length : 0) + ' cases</span>';
+        html += '<span style="font-size:12px; color:#27ae60; font-weight:600;">' + count + ' cases</span>';
         html += '</div>';
     });
     html += '</div>';
