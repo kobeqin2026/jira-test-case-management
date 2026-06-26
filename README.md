@@ -211,6 +211,19 @@ jira-testcase-manager/
 - 移除了旧版本中的冗余 promise chain 和不可达代码
 - 前端版本 v65
 
+### v1.5.1 (2026-06-26)
+基于 v1.5.0 新增以下功能：
+
+**测试阶段感知评估**
+- 专家评估 (LLM) prompt 加入芯片验证阶段上下文：BringUp → Feature Enable → FST → PVT
+- 自动从 Test Plan 名称检测当前阶段（BU/bringup → BringUp, feature enable → Feature Enable, fst → FST, pvt → PVT）
+- BringUp阶段：聚焦基本功能验证，不评估Feature Enable/FST/PVT的高级特性
+- Feature Enable阶段：验证各项特性功能完整性
+- FST阶段：全速/全压力测试
+- PVT阶段：量产验证，CPK/良率/一致性
+- 风险与建议中自动标注"后续阶段"关注点
+- 评估标题带阶段标识：如"🔍 专家评估 (LLM) — BringUp阶段"
+
 ### v1.5.0 (2026-06-25)
 基于 v1.2.0 新增以下功能：
 

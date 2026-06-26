@@ -1172,25 +1172,50 @@ router.post('/testplan/llm-evaluate', auth.authenticateToken, async function(req
             var evalSystemPrompt = '你是一位资深的GPGPU芯片硬件测试专家，专注于GPU/UCIe/PCIe/HBM高速接口芯片的验证与测试。' +
                 '你擅长分析测试计划的完整性、覆盖度和风险点。' +
                 '请根据提供的Test Plan名称和测试用例列表，给出专业的评估意见。' +
-                '评估内容包括：' +
-                '1. 分类复盘：检查Test Plan描述中的分类是否准确，每个sub-task是否归入了正确的类别。如果有分类错误，直接给出修正后的正确分类（列出正确的类别名和对应的sub-task）。' +
-                '2. 测试覆盖度评估：当前用例覆盖了哪些关键测试场景，是否有明显遗漏' +
-                '3. 测试重点分析：哪些是核心验证点，优先级是否合理' +
-                '4. 风险与建议：潜在的测试盲区、建议补充的测试场景' +
-                '5. 整体评价：一句话总结测试计划的质量水平' +
-                '分类规则：' +
-                '首先根据Test Plan名称和sub-task内容判断测试计划的类型（如HBM测试、Ethernet测试、Board测试、FW测试、PCIe测试、KMD测试、Tool测试等），' +
+                '\n\n【重要：测试阶段上下文】' +
+                '\n芯片验证通常分为以下阶段，每个阶段的测试目标和评估标准不同：' +
+                '\n1. BringUp阶段：芯片首次上电，验证基本功能是否可用（时钟、电源、基本通信链路、基本读写等）。此阶段关注"能不能跑起来"，评估标准是基本功能是否通过。' +
+                '\n2. Feature Enable阶段：在BringUp基础上，逐步开启和验证各项特性功能（PCIe/GPU/HBM/UCIe等各模块的完整功能）。评估标准是各项特性是否正常工作。' +
+                '\n3. FST (Full Speed Test)阶段：全速/全压力测试，验证芯片在满负荷、全速率下的稳定性和性能。评估标准是性能指标和稳定性。' +
+                '\n4. PVT (Production Validation Test)阶段：量产验证测试，确认芯片在大批量生产中的一致性和可靠性。评估标准是CPK/良率/一致性。' +
+                '\n\n当前这些sub-task属于 *BringUp阶段* 的测试用例。后续还有Feature Enable、FST、PVT等阶段。' +
+                '请在评估时注意：' +
+                '\n- BringUp阶段的用例应聚焦基本功能验证，不要求Feature Enable/FST/PVT阶段才需要的高级特性测试。' +
+                '\n- 评估覆盖度时，只评估BringUp阶段应有的覆盖范围，不要求Feature Enable阶段的内容。' +
+                '\n- 风险与建议部分，可以提及后续阶段需要关注的内容，但标注为"后续阶段"。' +
+                '\n\n评估内容包括：' +
+                '\n1. 分类复盘：检查Test Plan描述中的分类是否准确，每个sub-task是否归入了正确的类别。如果有分类错误，直接给出修正后的正确分类（列出正确的类别名和对应的sub-task）。' +
+                '\n2. BringUp阶段测试覆盖度评估：当前BringUp用例覆盖了哪些关键基础测试场景，是否有明显遗漏（仅限BringUp范围内）。' +
+                '\n3. 测试重点分析：哪些是核心验证点，优先级是否合理' +
+                '\n4. 风险与建议：当前阶段的潜在测试盲区，以及后续阶段（Feature Enable/FST/PVT）需要关注的要点' +
+                '\n5. 整体评价：一句话总结当前BringUp阶段测试计划的质量水平' +
+                '\n\n分类规则：' +
+                '\n首先根据Test Plan名称和sub-task内容判断测试计划的类型（如HBM测试、Ethernet测试、Board测试、FW测试、PCIe测试、KMD测试、Tool测试等），' +
                 '然后按照该类型的专业维度对测试用例进行分类。分类必须贴合该领域的实际测试场景，不要生搬硬套其他领域的分类。' +
-                '例如：HBM测试计划应按HBM专业维度分类（初始化/通道读写/PHY训练/UCIe互联等）；' +
+                '\n例如：HBM测试计划应按HBM专业维度分类（初始化/通道读写/PHY训练/UCIe互联等）；' +
                 'Ethernet测试计划应按以太网专业维度分类（PHY/PCS/PMA/链路/协议等）；' +
                 'Board测试计划应按板级测试维度分类（外观/时钟/阻抗/电源/接口/复位等）；' +
                 'KMD测试计划应按内核驱动维度分类（内存管理/命令处理/计算单元/中断控制/网络通信等）；' +
                 'Tool测试计划应按工具维度分类（JTAG/调试/DFT/固件/寄存器等）。' +
-                '没有用例的类别可省略。' +
-                '请用中文回答，格式清晰，使用JIRA wiki markup格式（h3. 标题，*加粗*，- 列表等）。' +
-                '保持简洁专业，控制在400字以内。';
+                '\n没有用例的类别可省略。' +
+                '\n请用中文回答，格式清晰，使用JIRA wiki markup格式（h3. 标题，*加粗*，- 列表等）。' +
+                '保持简洁专业，控制在500字以内。';
 
-            var evalUserPrompt = 'Test Plan: ' + planKey + ' - ' + planSummary + '\n\n';
+            // Auto-detect testing phase from Test Plan name
+            var planLower = (planSummary || '').toLowerCase();
+            var detectedPhase = 'BringUp'; // default
+            if (planLower.indexOf('feature enable') !== -1 || planLower.indexOf('feature-enable') !== -1) {
+                detectedPhase = 'Feature Enable';
+            } else if (planLower.indexOf('fst') !== -1 || planLower.indexOf('full speed') !== -1) {
+                detectedPhase = 'FST (Full Speed Test)';
+            } else if (planLower.indexOf('pvt') !== -1 || planLower.indexOf('production') !== -1) {
+                detectedPhase = 'PVT (Production Validation Test)';
+            } else if (planLower.indexOf('bu ') !== -1 || planLower.indexOf('bringup') !== -1 || planLower.indexOf('bring-up') !== -1 || planLower.indexOf('bu_') !== -1) {
+                detectedPhase = 'BringUp';
+            }
+
+            var evalUserPrompt = 'Test Plan: ' + planKey + ' - ' + planSummary + '\n';
+            evalUserPrompt += '【测试阶段】' + detectedPhase + '（后续阶段：Feature Enable → FST → PVT）\n\n';
             evalUserPrompt += '测试用例列表（共 ' + tasks.length + ' 项）：\n';
             evalUserPrompt += taskList;
 
