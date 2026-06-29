@@ -1301,7 +1301,9 @@ router.post('/testplan/llm-evaluate', auth.authenticateToken, async function(req
                 '\nEthernet domain应按以太网专业维度分类（PHY/PCS/PMA/链路/协议等）。' +
                 '\n没有用例的类别可省略。' +
                 '\n请用中文回答，格式清晰，使用JIRA wiki markup格式。' +
-                '保持简洁专业，控制在500字以内。';
+                '要求：h3. 作为小节标题，*加粗* 标记关键结论，- 列表列出要点。' +
+                '不要使用 **markdown** 加粗，用 JIRA 的 *加粗*。' +
+                '保持简洁专业，控制在400字以内。';
 
             // Auto-detect testing phase from Test Plan name
             var planLower = (planSummary || '').toLowerCase();
