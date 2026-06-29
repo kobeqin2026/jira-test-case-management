@@ -2550,12 +2550,13 @@ function updatePlanDescription(planKey, skipStep3) {
         }
 
         var allTasks = data.data.tasks;
+        var directTasks = data.data.directTasks;
         var planSummary = data.data.planSummary || planKey;
 
-        // Only process direct sub-tasks of the current plan (not linked plans' sub-tasks)
-        var tasks = allTasks.filter(function(t) { return t.parent === planKey; });
+        // Use directTasks if available (backend-filtered), otherwise filter locally
+        var tasks = directTasks && directTasks.length > 0 ? directTasks : allTasks.filter(function(t) { return t.parent === planKey; });
         if (tasks.length < allTasks.length) {
-            addLog('📋 过滤: ' + allTasks.length + ' 条关联任务中，仅处理 ' + planKey + ' 的 ' + tasks.length + ' 条直接 Sub-task', 'ok');
+            addLog('📋 从 ' + allTasks.length + ' 条关联任务中筛选出 ' + planKey + ' 的 ' + tasks.length + ' 条直接 Sub-task', 'ok');
         }
 
         // Always call LLM: generate for missing, enhance for existing

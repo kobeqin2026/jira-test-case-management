@@ -982,12 +982,17 @@ router.get('/testplan/linked-tasks/:planKey', auth.authenticateToken, async func
                 console.log('[TestCase] Debug parent keys:', allTasks.slice(0, 5).map(function(t) { return t.key + '->"' + t.parent + '"'; }).join(', '));
             }
 
+            // Build directTasks: only direct sub-tasks of the plan
+            var directTasks = allTasks.filter(function(t) { return t.parent === planKey; });
+            console.log('[TestCase] Direct sub-tasks of', planKey + ':', directTasks.length, '(total linked:', allTasks.length + ')');
+
             res.json({
                 success: true,
                 data: {
                     planKey: planKey,
                     planSummary: planResult.fields.summary,
                     tasks: allTasks,
+                    directTasks: directTasks,
                     linkedPlans: allLinkedPlans
                 }
             });
