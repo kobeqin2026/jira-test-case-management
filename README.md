@@ -195,6 +195,33 @@ jira-testcase-manager/
 
 ## 版本历史
 
+### v1.5.2 (2026-06-29)
+基于 v1.5.1 新增以下功能：
+
+**LLM 评估域限定（Domain-Scoped Evaluation）**
+- 专家评估 prompt 新增【核心原则：严格限定评估范围】
+- 评估只针对当前 Test Plan 所属 domain（如 CP/HBM/PCIe/KMD 等），不扩展到其他 domain
+- 不建议属于其他 sub test plan 的用例（如 CP 的 Test Plan 不建议 HBM/DDR/JTAG/电源/时钟等）
+- 分类 prompt 同步更新：按 domain 专业维度分类（CP → HCQD调度/Barrier/EventWait/MMIO/原子操作/SDMA）
+- 消除了 LLM 跨 domain 建议不相关测试用例的问题
+
+**"LLM重新评估"智能判断**
+- 重新评估时自动检查 Test Plan 描述是否已有分类（`h2. Test Summary` 标记）
+- 已分类 → 跳过分类步骤，直接专家评估（节省 40-160 秒）
+- 未分类 → 先分类再评估（完整流程）
+
+**后端 sub-task 过滤兜底**
+- `llm-evaluate` 接口增加后端过滤：确保只处理当前 plan 的直接 sub-tasks
+- 前端未传 parent 字段时（旧浏览器缓存），后端自动从 JIRA 查询 `parent = planKey` 的 sub-tasks
+- 解决了关联 plan 的 sub-tasks 被错误计入的问题（如 BR200-768 的 10 条 CP 用例混入 BR200-132 的 49 条 diag 用例）
+- `linked-tasks` 接口返回的 59 条关联任务，LLM 评估只处理当前 plan 的直接子任务
+
+**Categorize JSON 解析加固**
+- 新增 markdown 代码块内容提取（` ```json ... ``` ` 不依赖 `^` 锚点）
+- 4 层 fallback 解析：直接解析 → 代码块提取 → 首个 JSON 对象 → 贪婪匹配
+- 超过 20 条 task 时自动提升 categorize max_tokens 到 8000（防截断）
+- 前端版本 v79
+
 ### v1.5.1 (2026-06-26)
 基于 v1.5.0 新增以下功能：
 

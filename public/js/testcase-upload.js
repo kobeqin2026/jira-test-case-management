@@ -2549,8 +2549,14 @@ function updatePlanDescription(planKey, skipStep3) {
             return;
         }
 
-        var tasks = data.data.tasks;
+        var allTasks = data.data.tasks;
         var planSummary = data.data.planSummary || planKey;
+
+        // Only process direct sub-tasks of the current plan (not linked plans' sub-tasks)
+        var tasks = allTasks.filter(function(t) { return t.parent === planKey; });
+        if (tasks.length < allTasks.length) {
+            addLog('📋 过滤: ' + allTasks.length + ' 条关联任务中，仅处理 ' + planKey + ' 的 ' + tasks.length + ' 条直接 Sub-task', 'ok');
+        }
 
         // Always call LLM: generate for missing, enhance for existing
         var tasksNeedingGen = tasks.filter(function(t) { return !t.description || t.description.trim() === ''; });
@@ -2593,7 +2599,7 @@ function updatePlanDescription(planKey, skipStep3) {
                 planKey: planKey,
                 planSummary: planSummary,
                 tasks: tasks.map(function(t) {
-                    return { key: t.key, summary: t.summary, description: t.description || '', status: t.status || '', priority: t.priority || '' };
+                    return { key: t.key, summary: t.summary, description: t.description || '', status: t.status || '', priority: t.priority || '', parent: t.parent || '' };
                 }),
                 mode: 'generate_descriptions'
             })
@@ -2711,116 +2717,112 @@ function updatePlanDescription(planKey, skipStep3) {
 }
 
 function generateAndUploadDescription(tasks, planSummary, planKey) {
-    // Use LLM to categorize tasks (instead of keyword matching)
-    addLog('🤖 正在使用LLM分类测试用例...', 'ok');
-    showLlmEvalStatus('loading', 'LLM分类测试用例中...');
+    // Smart flow: check if already categorized, skip if so
+    addLog('📋 正在检查 Test Plan 状态...', 'ok');
+    showLlmEvalStatus('loading', '正在检查 Test Plan 分类状态...');
 
-    return fetch('/api/testcase/testplan/llm-evaluate', {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'Authorization': 'Bearer ' + authToken
-        },
-        body: JSON.stringify({
-            planKey: planKey,
-            planSummary: planSummary,
-            tasks: tasks.map(function(t) {
-                return { key: t.key, summary: t.summary, description: t.description || '', status: t.status || '', priority: t.priority || '' };
-            }),
-            mode: 'categorize'
-        })
+    return fetch('/api/testcase/testplan/description?planKey=' + encodeURIComponent(planKey), {
+        credentials: 'same-origin',
+        headers: { 'Authorization': 'Bearer ' + authToken }
     })
-    .then(function(r) {
-        var contentType = r.headers.get('content-type');
-        if (contentType && contentType.indexOf('text/html') !== -1) {
-            throw new Error('服务器超时返回HTML，请重试');
+    .then(function(r) { return r.json(); })
+    .then(function(descData) {
+        var existingDesc = (descData.success && descData.data && descData.data.description) || '';
+        var evalMarker = 'h2. 🔍 专家评估 (LLM)';
+        var catMarker = 'h2. Test Summary';
+        var hasCategorization = existingDesc.indexOf(catMarker) !== -1;
+        var evalIdx = existingDesc.indexOf(evalMarker);
+        var existingEval = evalIdx !== -1 ? existingDesc.substring(evalIdx + evalMarker.length).trim() : '';
+        // Extract categorization part (everything before eval marker)
+        var existingCatPart = '';
+        if (hasCategorization) {
+            existingCatPart = evalIdx !== -1 ? existingDesc.substring(0, evalIdx).trim() : existingDesc.trim();
         }
-        return r.json();
-    })
-    .then(function(catResult) {
-        if (catResult.success && catResult.data && catResult.data.description) {
+
+        var taskMapped = tasks.map(function(t) {
+            return { key: t.key, summary: t.summary, description: t.description || '', status: t.status || '', priority: t.priority || '', parent: t.parent || '' };
+        });
+
+        if (hasCategorization) {
+            // Already categorized → skip categorize, go directly to evaluate
+            addLog('✅ 已检测到分类信息，跳过分类步骤，直接进行专家评估', 'ok');
+            showLlmEvalStatus('loading', '已分类，直接专家评估中...');
+            return doEvaluateOnly(taskMapped, planSummary, planKey, existingCatPart, existingEval);
+        } else {
+            // Not categorized → run categorize first, then evaluate
+            addLog('🤖 未检测到分类信息，开始分类...', 'ok');
+            showLlmEvalStatus('loading', 'LLM分类测试用例中...');
+            return doCategorizeThenEvaluate(taskMapped, planSummary, planKey);
+        }
+    });
+
+    function doEvaluateOnly(taskMapped, planSummary, planKey, existingCatPart, existingEval) {
+        return fetch('/api/testcase/testplan/llm-evaluate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + authToken },
+            body: JSON.stringify({
+                planKey: planKey, planSummary: planSummary, tasks: taskMapped,
+                existingEvaluation: existingEval, existingDescription: existingCatPart
+            })
+        })
+        .then(function(r) { var ct = r.headers.get('content-type'); if (ct && ct.indexOf('text/html') !== -1) throw new Error('服务器超时返回HTML'); return r.json(); })
+        .then(function(llmResult) { return buildFinalDescription(llmResult, existingCatPart, existingEval, planKey); });
+    }
+
+    function doCategorizeThenEvaluate(taskMapped, planSummary, planKey) {
+        return fetch('/api/testcase/testplan/llm-evaluate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + authToken },
+            body: JSON.stringify({ planKey: planKey, planSummary: planSummary, tasks: taskMapped, mode: 'categorize' })
+        })
+        .then(function(r) { var ct = r.headers.get('content-type'); if (ct && ct.indexOf('text/html') !== -1) throw new Error('服务器超时返回HTML'); return r.json(); })
+        .then(function(catResult) {
+            if (!catResult.success || !catResult.data || !catResult.data.description) {
+                addLog('⚠️ LLM分类失败: ' + (catResult.error || '未知原因'), 'err');
+                showLlmEvalStatus('err', 'LLM分类失败: ' + (catResult.error || '未知原因'));
+                return null;
+            }
             addLog('✅ LLM分类完成', 'ok');
             var desc = catResult.data.description;
 
-            // Extract existing evaluation from current description
-            return fetch('/api/testcase/testplan/description?planKey=' + encodeURIComponent(planKey), {
-                credentials: 'same-origin',
-                headers: { 'Authorization': 'Bearer ' + authToken }
+            // Now run evaluate
+            addLog('🤖 正在调用 LLM 专家评估...', 'ok');
+            showLlmEvalStatus('loading', 'LLM硬件专家评估 Test Plan 中...');
+            return fetch('/api/testcase/testplan/llm-evaluate', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + authToken },
+                body: JSON.stringify({ planKey: planKey, planSummary: planSummary, tasks: taskMapped, existingDescription: desc })
             })
-            .then(function(r) { return r.json(); })
-            .then(function(descData) {
-                var existingDesc = (descData.success && descData.data && descData.data.description) || '';
-                var existingEval = '';
-                var evalMarker = 'h2. 🔍 专家评估 (LLM)';
-                var evalIdx = existingDesc.indexOf(evalMarker);
-                if (evalIdx !== -1) {
-                    existingEval = existingDesc.substring(evalIdx + evalMarker.length).trim();
-                }
+            .then(function(r) { var ct = r.headers.get('content-type'); if (ct && ct.indexOf('text/html') !== -1) throw new Error('服务器超时返回HTML'); return r.json(); })
+            .then(function(llmResult) { return buildFinalDescription(llmResult, desc, '', planKey); });
+        });
+    }
 
-                // Step 2: Call LLM for expert evaluation
-                addLog('🤖 正在调用 LLM 专家评估...', 'ok');
-                showLlmEvalStatus('loading', 'LLM硬件专家评估 Test Plan 中...');
-
-                return fetch('/api/testcase/testplan/llm-evaluate', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization': 'Bearer ' + authToken
-                    },
-                    body: JSON.stringify({
-                        planKey: planKey,
-                        planSummary: planSummary,
-                        tasks: tasks.map(function(t) {
-                            return { key: t.key, summary: t.summary, description: t.description || '', status: t.status || '', priority: t.priority || '' };
-                        }),
-                        existingEvaluation: existingEval,
-                        existingDescription: existingDesc
-                    })
-                })
-                .then(function(r) {
-                    var ct = r.headers.get('content-type');
-                    if (ct && ct.indexOf('text/html') !== -1) throw new Error('服务器超时返回HTML');
-                    return r.json();
-                })
-                .then(function(llmResult) {
-                    if (llmResult.success && llmResult.data && llmResult.data.evaluation) {
-                        addLog('✅ LLM 专家评估完成', 'ok');
-                        showLlmEvalStatus('ok', '✅ LLM硬件专家评估 Test Plan 完毕');
-                        var evalText = llmResult.data.evaluation;
-                        // Remove categorization review from evaluation
-                        evalText = evalText.replace(/h3\.\s*分类复盘[：:]?[\s\S]*?(?=\nh3\.|$)/g, '').trim();
-                        evalText = evalText.replace(/分类复盘[：:][\s\S]*?(?=\nh3\.|$)/g, '').trim();
-                        if (evalText) {
-                            desc += 'h2. 🔍 专家评估 (LLM)\n\n';
-                            desc += evalText + '\n\n';
-                        }
-                    } else {
-                        addLog('⚠️ LLM 评估跳过: ' + (llmResult.error || '未知原因') + '，保留已有评估', 'err');
-                        // Preserve existing evaluation when LLM fails
-                        if (existingEval) {
-                            desc += 'h2. 🔍 专家评估 (LLM)\n\n';
-                            desc += existingEval + '\n\n';
-                            addLog('♻️ 已恢复之前的专家评估内容', 'ok');
-                        }
-                    }
-
-                    // Update plan description
-                    return fetch('/api/testcase/testplan/description', {
-                        method: 'PUT',
-                        headers: {
-                            'Content-Type': 'application/json',
-                            'Authorization': 'Bearer ' + authToken
-                        },
-                        body: JSON.stringify({ planKey: planKey, description: desc })
-                    }).then(function(r) { return r.json(); });
-                });
-            });
+    function buildFinalDescription(llmResult, catPart, existingEval, planKey) {
+        var desc = catPart || '';
+        if (llmResult.success && llmResult.data && llmResult.data.evaluation) {
+            addLog('✅ LLM 专家评估完成', 'ok');
+            showLlmEvalStatus('ok', '✅ LLM硬件专家评估 Test Plan 完毕');
+            var evalText = llmResult.data.evaluation;
+            evalText = evalText.replace(/h3\.\s*分类复盘[：:]?[\s\S]*?(?=\nh3\.|$)/g, '').trim();
+            evalText = evalText.replace(/分类复盘[：:][\s\S]*?(?=\nh3\.|$)/g, '').trim();
+            if (evalText) {
+                desc += 'h2. 🔍 专家评估 (LLM)\n\n' + evalText + '\n\n';
+            }
         } else {
-            addLog('⚠️ LLM分类失败: ' + (catResult.error || '未知原因'), 'err');
-            showLlmEvalStatus('err', 'LLM分类失败: ' + (catResult.error || '未知原因'));
-            return null;
+            addLog('⚠️ LLM 评估失败: ' + (llmResult.error || '未知原因') + '，保留已有评估', 'err');
+            if (existingEval) {
+                desc += 'h2. 🔍 专家评估 (LLM)\n\n' + existingEval + '\n\n';
+                addLog('♻️ 已恢复之前的专家评估内容', 'ok');
+            }
         }
-    });
+
+        return fetch('/api/testcase/testplan/description', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + authToken },
+            body: JSON.stringify({ planKey: planKey, description: desc })
+        }).then(function(r) { return r.json(); });
+    }
 }
 
 function regeneratePlanDescription(skipStep3) {

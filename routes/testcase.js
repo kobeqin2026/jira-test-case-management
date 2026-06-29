@@ -957,6 +957,7 @@ router.get('/testplan/linked-tasks/:planKey', auth.authenticateToken, async func
                 var searchResult = await jiraRequest('GET', '/rest/api/2/search?jql=' + encodeURIComponent(jql) + '&fields=summary,status,issuetype,priority,description,assignee,labels,components,created,updated,parent', null, userPat);
                 if (searchResult && searchResult.issues) {
                     searchResult.issues.forEach(function(issue) {
+                        var parentKey = issue.fields.parent ? issue.fields.parent.key : '';
                         allTasks.push({
                             key: issue.key,
                             summary: issue.fields.summary,
@@ -969,13 +970,17 @@ router.get('/testplan/linked-tasks/:planKey', auth.authenticateToken, async func
                             components: (issue.fields.components || []).map(function(c) { return c.name || c; }),
                             created: issue.fields.created,
                             updated: issue.fields.updated,
-                            parent: issue.fields.parent ? issue.fields.parent.key : ''
+                            parent: parentKey
                         });
                     });
                 }
             }
 
             console.log('[TestCase] Linked-tasks total:', allTasks.length, 'sub-tasks for plan:', planKey);
+            // Debug: log parent keys
+            if (allTasks.length > 0) {
+                console.log('[TestCase] Debug parent keys:', allTasks.slice(0, 5).map(function(t) { return t.key + '->"' + t.parent + '"'; }).join(', '));
+            }
 
             res.json({
                 success: true,
@@ -1006,6 +1011,41 @@ router.post('/testplan/llm-evaluate', auth.authenticateToken, async function(req
         var tasks = body.tasks || [];
         var planSummary = body.planSummary || '';
         var mode = body.mode || 'evaluate'; // 'evaluate' or 'generate_descriptions'
+
+        // Backend safety: ensure only direct sub-tasks of the plan are processed
+        var beforeFilter = tasks.length;
+        var hasParentField = tasks.length > 0 && tasks.some(function(t) { return t.parent; });
+        var userPat = req.user.jiraPat || '';
+
+        if (!hasParentField && planKey) {
+            // Old frontend didn't send parent field → fetch directly from JIRA
+            console.log('[TestCase-LLMEval] No parent field in tasks, fetching direct sub-tasks from JIRA for', planKey);
+            try {
+                var jql = 'parent = ' + planKey + ' ORDER BY created ASC';
+                var jiraResult = await jiraRequest('GET', '/rest/api/2/search?jql=' + encodeURIComponent(jql) + '&fields=summary,status,issuetype,priority,description,assignee,labels,components,parent&maxResults=200', null, userPat);
+                if (jiraResult && jiraResult.issues && jiraResult.issues.length > 0) {
+                    tasks = jiraResult.issues.map(function(issue) {
+                        return {
+                            key: issue.key,
+                            summary: issue.fields.summary,
+                            status: issue.fields.status ? issue.fields.status.name : '',
+                            priority: issue.fields.priority ? issue.fields.priority.name : '',
+                            description: issue.fields.description || '',
+                            parent: issue.fields.parent ? issue.fields.parent.key : ''
+                        };
+                    });
+                    console.log('[TestCase-LLMEval] Fetched', tasks.length, 'direct sub-tasks from JIRA');
+                }
+            } catch (e) {
+                console.error('[TestCase-LLMEval] JIRA fetch error:', e.message);
+            }
+        } else if (hasParentField) {
+            // Frontend sent parent field → filter by it
+            tasks = tasks.filter(function(t) { return t.parent === planKey; });
+            if (tasks.length < beforeFilter) {
+                console.log('[TestCase-LLMEval] Filtered tasks:', beforeFilter, '->', tasks.length, '(only direct sub-tasks of', planKey + ')');
+            }
+        }
 
         console.log('[TestCase-LLMEval] Start:', planKey, 'tasks:', tasks.length, 'mode:', mode);
 
@@ -1146,11 +1186,15 @@ router.post('/testplan/llm-evaluate', auth.authenticateToken, async function(req
 
             var catSystemPrompt = '你是一位资深的GPGPU芯片硬件测试专家，专注于GPU/UCIe/PCIe/HBM高速接口芯片的验证与测试。' +
                 '请根据提供的Test Plan名称和测试用例列表，将测试用例按专业维度分类。' +
-                '分类规则：' +
-                '首先根据Test Plan名称和sub-task内容判断测试计划的类型（如HBM测试、Ethernet测试、Board测试、FW测试、PCIe测试、KMD测试、Tool测试、BBV测试、IODie测试等），' +
-                '然后按照该类型的专业维度对测试用例进行分类。分类必须贴合该领域的实际测试场景。' +
-                '例如：HBM测试计划应按HBM专业维度分类；Ethernet测试计划应按以太网专业维度分类；BBV测试计划应按板级验证维度分类。' +
-                '没有用例的类别可省略。' +
+                '\n【核心原则：严格限定在当前Test Plan的domain范围内分类，不要跨domain】' +
+                '\n分类规则：' +
+                '\n首先根据Test Plan名称判断所属domain（CP/HBM/Ethernet/Board/FW/PCIe/KMD/Tool等），' +
+                '然后按照该domain的专业维度对测试用例进行分类。分类必须贴合该domain的实际测试场景。' +
+                '\nCP domain分类维度：HCQD调度/Barrier/EventWait/MMIO寄存器/原子操作/SDMA数据搬运等。' +
+                '\nHBM domain分类维度：初始化/通道读写/PHY训练/UCIe互联等。' +
+                '\nEthernet domain分类维度：PHY/PCS/PMA/链路/协议等。' +
+                '\nKMD domain分类维度：内存管理/命令处理/计算单元/中断控制等。' +
+                '\n没有用例的类别可省略。' +
                 '请用JSON格式返回，格式如下：{ "categories": [{ "name": "类别名", "items": [{ "key": "BR200-xxx", "summary": "标题", "description": "简短描述" }] }] }' +
                 '保持描述简洁，每条不超过100字。';
 
@@ -1159,18 +1203,39 @@ router.post('/testplan/llm-evaluate', auth.authenticateToken, async function(req
             catUserPrompt += taskList;
 
             console.log('[TestCase-LLMEval] Categorizing plan:', planKey, 'tasks:', tasks.length);
-            var catContent = await callLLM(catSystemPrompt, catUserPrompt, 2000);
+            var catMaxTokens = tasks.length <= 20 ? 4000 : 8000;
+            var catContent = await callLLM(catSystemPrompt, catUserPrompt, catMaxTokens);
 
-            // Parse JSON response
+            // Parse JSON response (robust 3-layer parsing)
             var categorized = null;
             try { categorized = JSON.parse(catContent); } catch (_) {}
             if (!categorized) {
+                // Try extracting content from markdown code blocks (```json ... ```)
+                var codeBlockMatch = catContent.match(/```(?:json)?\s*([\s\S]*?)```/);
+                if (codeBlockMatch) {
+                    try { categorized = JSON.parse(codeBlockMatch[1].trim()); } catch (_) {}
+                }
+            }
+            if (!categorized) {
+                // Try stripping markdown code blocks at start/end
                 var stripped = catContent.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
                 try { categorized = JSON.parse(stripped); } catch (_) {}
             }
             if (!categorized) {
-                var jsonMatch = catContent.match(/\{[\s\S]*\}/);
-                if (jsonMatch) { try { categorized = JSON.parse(jsonMatch[0]); } catch (_) {} }
+                // Try finding first complete JSON object
+                var jsonMatch = catContent.match(/\{[\s\S]*?\}/);
+                if (jsonMatch) {
+                    var jsonStr = jsonMatch[0];
+                    jsonStr = jsonStr.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
+                    try { categorized = JSON.parse(jsonStr); } catch (_) {}
+                }
+            }
+            if (!categorized) {
+                // Last resort: try finding the largest JSON object (greedy)
+                var bigMatch = catContent.match(/\{[\s\S]*\}/);
+                if (bigMatch) {
+                    try { categorized = JSON.parse(bigMatch[0]); } catch (_) {}
+                }
             }
 
             if (categorized && categorized.categories) {
@@ -1206,33 +1271,31 @@ router.post('/testplan/llm-evaluate', auth.authenticateToken, async function(req
             var evalSystemPrompt = '你是一位资深的GPGPU芯片硬件测试专家，专注于GPU/UCIe/PCIe/HBM高速接口芯片的验证与测试。' +
                 '你擅长分析测试计划的完整性、覆盖度和风险点。' +
                 '请根据提供的Test Plan名称和测试用例列表，给出专业的评估意见。' +
+                '\n\n【核心原则：严格限定评估范围】' +
+                '\n- 你只需要评估当前Test Plan下提供的测试用例，不要扩展到其他domain或模块。' +
+                '\n- 每个Test Plan只负责一个特定domain的测试（如CP、HBM、PCIe、KMD等）。' +
+                '\n- 不要建议属于其他domain/模块的测试用例（如：CP的Test Plan不应该建议HBM/DDR/PCIe/JTAG/电源/时钟相关的测试）。' +
+                '\n- 不要建议属于其他sub test plan的用例。' +
+                '\n- 如果当前domain的BringUp测试用例看起来已经覆盖了关键路径，就如实评价，不要为了"完整性"添加不相关的建议。' +
                 '\n\n【重要：测试阶段上下文】' +
                 '\n芯片验证通常分为以下阶段，每个阶段的测试目标和评估标准不同：' +
-                '\n1. BringUp阶段：芯片首次上电，验证基本功能是否可用（时钟、电源、基本通信链路、基本读写等）。此阶段关注"能不能跑起来"，评估标准是基本功能是否通过。' +
-                '\n2. Feature Enable阶段：在BringUp基础上，逐步开启和验证各项特性功能（PCIe/GPU/HBM/UCIe等各模块的完整功能）。评估标准是各项特性是否正常工作。' +
-                '\n3. FST (Full Speed Test)阶段：全速/全压力测试，验证芯片在满负荷、全速率下的稳定性和性能。评估标准是性能指标和稳定性。' +
-                '\n4. PVT (Production Validation Test)阶段：量产验证测试，确认芯片在大批量生产中的一致性和可靠性。评估标准是CPK/良率/一致性。' +
-                '\n\n当前这些sub-task属于 *BringUp阶段* 的测试用例。后续还有Feature Enable、FST、PVT等阶段。' +
-                '请在评估时注意：' +
-                '\n- BringUp阶段的用例应聚焦基本功能验证，不要求Feature Enable/FST/PVT阶段才需要的高级特性测试。' +
-                '\n- 评估覆盖度时，只评估BringUp阶段应有的覆盖范围，不要求Feature Enable阶段的内容。' +
-                '\n- 风险与建议部分，可以提及后续阶段需要关注的内容，但标注为"后续阶段"。' +
+                '\n1. BringUp阶段：芯片首次上电，验证基本功能是否可用。此阶段关注"能不能跑起来"。' +
+                '\n2. Feature Enable阶段：逐步开启和验证各项特性功能。' +
+                '\n3. FST (Full Speed Test)阶段：全速/全压力测试。' +
+                '\n4. PVT (Production Validation Test)阶段：量产验证测试。' +
                 '\n\n评估内容包括：' +
-                '\n1. 分类复盘：检查Test Plan描述中的分类是否准确，每个sub-task是否归入了正确的类别。如果有分类错误，直接给出修正后的正确分类（列出正确的类别名和对应的sub-task）。' +
-                '\n2. BringUp阶段测试覆盖度评估：当前BringUp用例覆盖了哪些关键基础测试场景，是否有明显遗漏（仅限BringUp范围内）。' +
-                '\n3. 测试重点分析：哪些是核心验证点，优先级是否合理' +
-                '\n4. 风险与建议：当前阶段的潜在测试盲区，以及后续阶段（Feature Enable/FST/PVT）需要关注的要点' +
-                '\n5. 整体评价：一句话总结当前BringUp阶段测试计划的质量水平' +
+                '\n1. 覆盖度评估：当前domain在BringUp阶段的用例覆盖了哪些关键测试场景（仅限当前domain范围内）。' +
+                '\n2. 测试重点分析：哪些是核心验证点，优先级是否合理' +
+                '\n3. 风险与建议：当前domain的潜在测试盲区（不要跨domain建议）。' +
+                '\n4. 整体评价：一句话总结当前domain测试计划的质量水平' +
                 '\n\n分类规则：' +
-                '\n首先根据Test Plan名称和sub-task内容判断测试计划的类型（如HBM测试、Ethernet测试、Board测试、FW测试、PCIe测试、KMD测试、Tool测试等），' +
-                '然后按照该类型的专业维度对测试用例进行分类。分类必须贴合该领域的实际测试场景，不要生搬硬套其他领域的分类。' +
-                '\n例如：HBM测试计划应按HBM专业维度分类（初始化/通道读写/PHY训练/UCIe互联等）；' +
-                'Ethernet测试计划应按以太网专业维度分类（PHY/PCS/PMA/链路/协议等）；' +
-                'Board测试计划应按板级测试维度分类（外观/时钟/阻抗/电源/接口/复位等）；' +
-                'KMD测试计划应按内核驱动维度分类（内存管理/命令处理/计算单元/中断控制/网络通信等）；' +
-                'Tool测试计划应按工具维度分类（JTAG/调试/DFT/固件/寄存器等）。' +
+                '\n首先根据Test Plan名称判断所属domain（CP/HBM/Ethernet/Board/FW/PCIe/KMD/Tool等），' +
+                '然后按照该domain的专业维度对测试用例进行分类。' +
+                '\nCP domain应按Command Processor维度分类（HCQD调度/Barrier/EventWait/MMIO寄存器/原子操作/SDMA数据搬运等）。' +
+                '\nHBM domain应按HBM专业维度分类（初始化/通道读写/PHY训练/UCIe互联等）。' +
+                '\nEthernet domain应按以太网专业维度分类（PHY/PCS/PMA/链路/协议等）。' +
                 '\n没有用例的类别可省略。' +
-                '\n请用中文回答，格式清晰，使用JIRA wiki markup格式（h3. 标题，*加粗*，- 列表等）。' +
+                '\n请用中文回答，格式清晰，使用JIRA wiki markup格式。' +
                 '保持简洁专业，控制在500字以内。';
 
             // Auto-detect testing phase from Test Plan name
