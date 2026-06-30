@@ -1936,6 +1936,14 @@ function fillCommand(text) {
 // Handle paste of tab-separated or space-separated data
 var aiPromptEl = document.getElementById('ai-prompt');
 if (aiPromptEl) {
+    // Ensure Enter key works in textarea for creating new lines
+    aiPromptEl.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            // Allow default newline behavior in textarea
+            e.stopPropagation();
+        }
+    });
+
     aiPromptEl.addEventListener('paste', function(e) {
         // Prevent default paste to avoid duplication
         e.preventDefault();

@@ -198,6 +198,11 @@ jira-testcase-manager/
 ### v1.5.3 (2026-06-30)
 基于 v1.5.2 新增以下优化：
 
+**AI 自然语言输入回车键修复**
+- 修复 textarea 回车键不识别的问题（Enter 键换行失效）
+- 添加 keydown 事件处理器确保 Enter 正常创建新行
+- textarea 行数从 rows=3 增加到 rows=5，方便查看多行输入
+
 **LLM 评估性能优化**
 - 描述生成批处理：BATCH_SIZE 从 30 降至 10，CONCURRENCY 从 2 提升至 3
 - 20条 task 从 ~145秒降至预计 ~70秒（2批并行处理）
