@@ -616,15 +616,40 @@ function renderLinkedPlans(plans) {
     var oldSection = document.getElementById('linked-plans-section');
     if (oldSection) oldSection.remove();
     if (plans.length === 0) return;
-    // Count sub-tasks per plan
+    // Count sub-tasks per plan (including tasks from sub-plans)
     var planCounts = {};
     subtasks.forEach(function(t) {
         var p = t.parent || '';
         if (p) planCounts[p] = (planCounts[p] || 0) + 1;
     });
+    // Also count tasks from L2/L3 linked plans into their L1 parent
+    // Build parent-child map from linkedPlans
+    var planParentMap = {};
+    plans.forEach(function(lp) {
+        if (lp.level === 2 && lp.parentKey) {
+            // L2 plan's cases should count towards L1 parent
+            var l1Count = planCounts[lp.key] || 0;
+            planCounts[lp.parentKey] = (planCounts[lp.parentKey] || 0) + l1Count;
+        }
+    });
+    // Sort plans: L1 first, then L2 grouped under their L1 parent
+    var l1Plans = plans.filter(function(p) { return p.level === 1; });
+    var l2Plans = plans.filter(function(p) { return p.level === 2; });
+    var sortedPlans = [];
+    l1Plans.forEach(function(lp) {
+        sortedPlans.push(lp);
+        // Add L2 children right after their L1 parent
+        l2Plans.forEach(function(l2) {
+            if (l2.parentKey === lp.key) sortedPlans.push(l2);
+        });
+    });
+    // Add any remaining L2 plans (orphaned or different parent)
+    l2Plans.forEach(function(l2) {
+        if (sortedPlans.indexOf(l2) === -1) sortedPlans.push(l2);
+    });
     var html = '<div class="card" style="margin-bottom:16px; padding:14px; background:#f8f9fa;">';
     html += '<div style="font-size:13px; color:#555; font-weight:600; margin-bottom:8px;">📎 关联的 Sub-Test Plans</div>';
-    plans.forEach(function(lp) {
+    sortedPlans.forEach(function(lp) {
         var typeClass = lp.issuetype === 'Test Plan' ? 'pc-type-testplan' : 'pc-type-task';
         var indent = lp.level === 2 ? 'margin-left:24px;' : '';
         var prefix = lp.level === 2 ? '└─ ' : '';
@@ -2570,8 +2595,8 @@ function updatePlanDescription(planKey, skipStep3) {
         }
 
         // Estimate time: ~3 seconds per task, minimum 30 seconds
-        var BATCH_SIZE = 30;
-        var CONCURRENCY = 2;
+        var BATCH_SIZE = 10;
+        var CONCURRENCY = 3;
         var estimatedSeconds = Math.max(30, tasks.length * 3);
         var estMin = Math.floor(estimatedSeconds / 60);
         var estSec = estimatedSeconds % 60;

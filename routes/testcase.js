@@ -869,15 +869,16 @@ router.get('/testplan/linked-tasks/:planKey', auth.authenticateToken, async func
             var allSubtaskKeys = []; // all sub-tasks across all plans (3 levels)
             var allLinkedPlans = []; // only L1 linked plans for display
 
-            // Helper: get issuelinks for a plan
+            // Helper: get issuelinks for a plan (only outward = sub plans)
             async function getLinkedPlanKeys(pKey) {
                 try {
                     var r = await jiraRequest('GET', '/rest/api/2/issue/' + pKey + '?fields=issuelinks', null, userPat);
                     var keys = [];
                     if (r && r.fields && r.fields.issuelinks) {
                         r.fields.issuelinks.forEach(function(l) {
+                            // Only outward issues are "sub plans" of this plan
+                            // Inward issues are parents/siblings linking TO this plan
                             if (l.outwardIssue) keys.push(l.outwardIssue.key);
-                            if (l.inwardIssue) keys.push(l.inwardIssue.key);
                         });
                     }
                     return keys;
@@ -932,7 +933,11 @@ router.get('/testplan/linked-tasks/:planKey', auth.authenticateToken, async func
                     if (seenPlanKeys[linked2Keys[j]]) continue;
                     seenPlanKeys[linked2Keys[j]] = true;
                     level2PlanKeys.push(linked2Keys[j]);
-                    // L2 plans not added to display list, only for sub-task collection
+                    // Add L2 plans to display list so frontend can count their cases
+                    try {
+                        var lr2 = await jiraRequest('GET', '/rest/api/2/issue/' + linked2Keys[j] + '?fields=summary,issuetype', null, userPat);
+                        allLinkedPlans.push({ key: linked2Keys[j], summary: lr2.fields.summary, issuetype: lr2.fields.issuetype.name, level: 2, parentKey: level1Keys[i] });
+                    } catch (e) {}
                 }
             }
 
@@ -960,6 +965,7 @@ router.get('/testplan/linked-tasks/:planKey', auth.authenticateToken, async func
                         var parentKey = issue.fields.parent ? issue.fields.parent.key : '';
                         allTasks.push({
                             key: issue.key,
+                            url: jiraConfig.baseUrl + '/browse/' + issue.key,
                             summary: issue.fields.summary,
                             status: issue.fields.status ? issue.fields.status.name : '',
                             issuetype: issue.fields.issuetype ? issue.fields.issuetype.name : '',
@@ -1125,9 +1131,9 @@ router.post('/testplan/llm-evaluate', auth.authenticateToken, async function(req
         }
 
         if (mode === 'generate_descriptions') {
-            // Batch processing: split tasks into groups, 2 concurrent batches
-            var BATCH_SIZE = 30;
-            var CONCURRENCY = 2;
+            // Batch processing: smaller batches + higher concurrency for speed
+            var BATCH_SIZE = 10;
+            var CONCURRENCY = 3;
             var allDescriptions = {};
             var totalBatches = Math.ceil(tasks.length / BATCH_SIZE);
 
@@ -1185,31 +1191,41 @@ router.post('/testplan/llm-evaluate', auth.authenticateToken, async function(req
         } else if (body.mode === 'categorize') {
             // Mode: Categorize tasks using LLM (returns categorized description)
             var taskList = tasks.map(function(t, i) {
-                var desc = (t.description || '').substring(0, 200);
+                var desc = (t.description || '').substring(0, 150);
                 return (i + 1) + '. [' + t.key + '] ' + (t.summary || '') + (desc ? ' — ' + desc : ' (无描述)');
             }).join('\n');
 
-            var catSystemPrompt = '你是一位资深的GPGPU芯片硬件测试专家，专注于GPU/UCIe/PCIe/HBM高速接口芯片的验证与测试。' +
-                '请根据提供的Test Plan名称和测试用例列表，将测试用例按专业维度分类。' +
-                '\n【核心原则：严格限定在当前Test Plan的domain范围内分类，不要跨domain】' +
-                '\n分类规则：' +
-                '\n首先根据Test Plan名称判断所属domain（CP/HBM/Ethernet/Board/FW/PCIe/KMD/Tool等），' +
-                '然后按照该domain的专业维度对测试用例进行分类。分类必须贴合该domain的实际测试场景。' +
-                '\nCP domain分类维度：HCQD调度/Barrier/EventWait/MMIO寄存器/原子操作/SDMA数据搬运等。' +
-                '\nHBM domain分类维度：初始化/通道读写/PHY训练/UCIe互联等。' +
-                '\nEthernet domain分类维度：PHY/PCS/PMA/链路/协议等。' +
-                '\nKMD domain分类维度：内存管理/命令处理/计算单元/中断控制等。' +
-                '\n没有用例的类别可省略。' +
-                '请用JSON格式返回，格式如下：{ "categories": [{ "name": "类别名", "items": [{ "key": "BR200-xxx", "summary": "标题", "description": "简短描述" }] }] }' +
-                '保持描述简洁，每条不超过100字。';
+            var catSystemPrompt = '你是GPGPU芯片硬件测试专家。根据Test Plan名称判断domain（CP/HBM/Ethernet/PCIe/KMD等），' +
+                '然后按该domain维度分类测试用例。严格限定在当前domain，不跨domain。' +
+                'CP维度：HCQD调度/Barrier/EventWait/MMIO/原子操作/SDMA。' +
+                'HBM维度：初始化/通道读写/PHY训练/UCIe互联。' +
+                'KMD维度：内存管理/命令处理/计算单元/中断控制。' +
+                '返回JSON：{"categories":[{"name":"类别","items":[{"key":"BR200-xxx","summary":"标题","description":"≤50字描述"}]}]}';
 
             var catUserPrompt = 'Test Plan: ' + planKey + ' - ' + planSummary + '\n\n';
-            catUserPrompt += '测试用例列表（共 ' + tasks.length + ' 项）：\n';
-            catUserPrompt += taskList;
+            catUserPrompt += '测试用例（共 ' + tasks.length + ' 项）：\n' + taskList;
 
             console.log('[TestCase-LLMEval] Categorizing plan:', planKey, 'tasks:', tasks.length);
+            var catStartTime = Date.now();
             var catMaxTokens = tasks.length <= 20 ? 4000 : 8000;
-            var catContent = await callLLM(catSystemPrompt, catUserPrompt, catMaxTokens);
+            var catContent = null;
+            
+            // Retry logic for categorize (up to 2 attempts)
+            for (var catAttempt = 1; catAttempt <= 2; catAttempt++) {
+                try {
+                    catContent = await callLLM(catSystemPrompt, catUserPrompt, catMaxTokens);
+                    var catTime = ((Date.now() - catStartTime) / 1000).toFixed(1);
+                    console.log('[TestCase-LLMEval] Categorize LLM response in', catTime, 's (attempt ' + catAttempt + ')');
+                    break;
+                } catch (catErr) {
+                    console.error('[TestCase-LLMEval] Categorize attempt ' + catAttempt + ' failed:', catErr.message);
+                    if (catAttempt === 2) {
+                        return res.status(500).json({ success: false, error: 'Categorize failed after 2 attempts: ' + catErr.message });
+                    }
+                    // Wait 2s before retry
+                    await new Promise(function(r) { setTimeout(r, 2000); });
+                }
+            }
 
             // Parse JSON response (robust 3-layer parsing)
             var categorized = null;
@@ -1340,9 +1356,12 @@ router.post('/testplan/llm-evaluate', auth.authenticateToken, async function(req
             }
 
             console.log('[TestCase-LLMEval] Evaluating plan:', planKey, 'tasks:', tasks.length);
+            var evalStartTime = Date.now();
 
             var llmContent = await callLLM(evalSystemPrompt, evalUserPrompt, 1000);
 
+            var evalTime = ((Date.now() - evalStartTime) / 1000).toFixed(1);
+            console.log('[TestCase-LLMEval] Evaluate LLM response in', evalTime, 's');
             var totalTime = ((Date.now() - startTime) / 1000).toFixed(1);
             console.log('[TestCase-LLMEval] Completed in', totalTime, 's');
             res.json({ success: true, data: { evaluation: llmContent } });

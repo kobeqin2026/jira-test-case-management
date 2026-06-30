@@ -195,6 +195,28 @@ jira-testcase-manager/
 
 ## 版本历史
 
+### v1.5.3 (2026-06-30)
+基于 v1.5.2 新增以下优化：
+
+**LLM 评估性能优化**
+- 描述生成批处理：BATCH_SIZE 从 30 降至 10，CONCURRENCY 从 2 提升至 3
+- 20条 task 从 ~145秒降至预计 ~70秒（2批并行处理）
+- 分类（categorize）prompt 精简，减少 token 消耗
+- 分类接口增加重试机制（最多2次，间隔2秒）
+- 每个 LLM 调用步骤添加详细耗时日志
+
+**关联 Sub-Test Plans 修复**
+- 修复 inward issue link 被错误显示为 sub test plan 的问题
+- `linked-tasks` 接口只返回 outward 链接（当前 plan 指向的子计划）
+- L2 链接计划现在也包含在 `linkedPlans` 返回中（level=2, parentKey=L1）
+- 前端 cases 计数聚合：L2 计划的 cases 累加到 L1 父计划
+- L2 计划按 parentKey 分组排序，紧跟在其 L1 父计划后面显示
+
+**Sub-task JIRA 链接修复**
+- `linked-tasks` 接口返回的 task 对象新增 `url` 字段
+- Test Case 库详情表格第一列 Key 超链接正确指向 JIRA
+- 前端版本 v79
+
 ### v1.5.2 (2026-06-29)
 基于 v1.5.1 新增以下功能：
 
