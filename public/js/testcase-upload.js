@@ -1233,7 +1233,8 @@ function renderDetailTableBody(issues) {
         { key: 'assignee', label: '负责人', width: '100px' },
         { key: 'components', label: '组件', width: '100px' },
         { key: 'priority', label: '优先级', width: '80px' },
-        { key: 'created', label: '创建时间', width: '140px' }
+        { key: 'created', label: '创建时间', width: '140px' },
+        { key: 'action', label: '操作', width: '60px' }
     ];
 
     var theadHtml = '<tr><th class="chk-col"><input type="checkbox" id="select-all-cb" onchange="toggleSelectAll(this.checked)" /></th>';
@@ -1322,6 +1323,18 @@ function renderDetailTableBody(issues) {
         var tdCreated = document.createElement('td');
         tdCreated.textContent = formatDate(issue.created);
         tr.appendChild(tdCreated);
+
+        // Action - Delete button
+        var tdAction = document.createElement('td');
+        tdAction.style.textAlign = 'center';
+        var delBtn = document.createElement('button');
+        delBtn.className = 'btn btn-sm btn-delete-issue';
+        delBtn.style.cssText = 'background:none; color:#e74c3c; border:1px solid #e74c3c; padding:2px 6px; font-size:11px; cursor:pointer; border-radius:4px;';
+        delBtn.textContent = '🗑️';
+        delBtn.title = '删除 ' + issue.key;
+        delBtn.onclick = (function(k) { return function() { deleteIssue(k); }; })(issue.key);
+        tdAction.appendChild(delBtn);
+        tr.appendChild(tdAction);
 
         fragment.appendChild(tr);
     });
@@ -1680,6 +1693,93 @@ function saveStatusToJira() {
         alert('\u274c 网络错误: ' + e.message);
     });
 }
+
+// ============ Delete Test Cases ============
+
+function deleteIssue(key) {
+    if (!confirm('确定要删除 ' + key + ' 吗？此操作不可撤销。')) return;
+    
+    var btn = document.querySelector('tr[data-key="' + key + '"] .btn-delete-issue');
+    if (btn) { btn.disabled = true; btn.textContent = '删除中...'; }
+    
+    fetch('/api/testcase/delete/' + key, {
+        method: 'DELETE',
+        credentials: 'same-origin',
+        headers: authToken ? { 'Authorization': 'Bearer ' + authToken } : {}
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        if (data.success) {
+            // Remove from subtasks array
+            subtasks = subtasks.filter(function(t) { return t.key !== key; });
+            allSubtasksGlobal = allSubtasksGlobal.filter(function(t) { return t.key !== key; });
+            // Re-render
+            renderDetailTable(subtasks);
+            renderKPI(subtasks);
+            renderDistributions(subtasks);
+            initPendingPieCharts();
+        } else {
+            alert('删除失败: ' + (data.error || '未知错误'));
+            if (btn) { btn.disabled = false; btn.textContent = '🗑️'; }
+        }
+    })
+    .catch(function(e) {
+        alert('删除失败: ' + e.message);
+        if (btn) { btn.disabled = false; btn.textContent = '🗑️'; }
+    });
+}
+
+function batchDeleteIssues() {
+    if (selectedKeys.size === 0) { alert('请先选择要删除的项'); return; }
+    var count = selectedKeys.size;
+    if (!confirm('确定要删除选中的 ' + count + ' 个 Test Case 吗？此操作不可撤销。')) return;
+    
+    var keys = Array.from(selectedKeys);
+    var btn = document.getElementById('batch-delete-btn');
+    if (btn) { btn.disabled = true; btn.textContent = '⏳ 删除中...'; }
+    
+    fetch('/api/testcase/batch-delete', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: {
+            'Content-Type': 'application/json',
+            ...(authToken ? { 'Authorization': 'Bearer ' + authToken } : {})
+        },
+        body: JSON.stringify({ keys: keys })
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        if (data.success && data.data) {
+            var deleted = data.data.deleted || 0;
+            var failed = data.data.failed || 0;
+            if (failed > 0) {
+                var errMsg = (data.data.errors || []).map(function(e) { return e.key + ': ' + e.error; }).join('\n');
+                alert('✅ 删除 ' + deleted + ' 条\n❌ 失败 ' + failed + ' 条\n\n' + errMsg);
+            } else {
+                alert('✅ 成功删除 ' + deleted + ' 条 Test Case');
+            }
+            // Remove deleted keys from subtasks
+            var deletedKeys = new Set(keys.filter(function(k) {
+                return !(data.data.errors || []).some(function(e) { return e.key === k; });
+            }));
+            subtasks = subtasks.filter(function(t) { return !deletedKeys.has(t.key); });
+            allSubtasksGlobal = allSubtasksGlobal.filter(function(t) { return !deletedKeys.has(t.key); });
+            selectedKeys.clear();
+            renderDetailTable(subtasks);
+            renderKPI(subtasks);
+            renderDistributions(subtasks);
+            initPendingPieCharts();
+        } else {
+            alert('批量删除失败: ' + (data.error || '未知错误'));
+        }
+        if (btn) { btn.disabled = false; btn.textContent = '🗑️ 批量删除'; }
+    })
+    .catch(function(e) {
+        alert('批量删除失败: ' + e.message);
+        if (btn) { btn.disabled = false; btn.textContent = '🗑️ 批量删除'; }
+    });
+}
+
 // ============ Utility Functions ============
 
 function escapeHtml(text) {
@@ -1732,6 +1832,7 @@ function onUploadProjectChange() {
     // Show parent section, hide content
     document.getElementById('upload-parent-section').style.display = 'block';
     document.getElementById('upload-content-section').style.display = 'none';
+    document.getElementById('upload-existing-section').style.display = 'none';
     document.getElementById('upload-breadcrumb').style.display = 'none';
     document.getElementById('upload-project-section').style.display = 'none';
 
@@ -1813,10 +1914,23 @@ function selectUploadParent(key, summary, status) {
     uploadSelectedPlanSummary = summary;
     uploadSelectedPlanStatus = status || '';
 
-    // Hide step 1 & 2, show breadcrumb + content
+    // Hide step 1 & 2
     document.getElementById('upload-project-section').style.display = 'none';
     document.getElementById('upload-parent-section').style.display = 'none';
-    document.getElementById('upload-content-section').style.display = 'block';
+    // Hide content section (will show after user clicks "Add new")
+    document.getElementById('upload-content-section').style.display = 'none';
+    // Reset upload content state
+    aiGeneratedIssues = [];
+    document.getElementById('ai-prompt').value = '';
+    document.getElementById('preview-section').style.display = 'none';
+    document.getElementById('ai-status').style.display = 'none';
+    document.getElementById('btn-ai-upload').disabled = true;
+    document.getElementById('progress-section').style.display = 'none';
+    document.getElementById('summary-section').style.display = 'none';
+    document.getElementById('btn-start-upload').disabled = true;
+    // Clear progress log from previous runs
+    var logEl = document.getElementById('progress-log');
+    if (logEl) logEl.innerHTML = '';
 
     // Show regenerate description button in breadcrumb
     var regenBtn = document.getElementById('ubc-regen-desc');
@@ -1831,6 +1945,9 @@ function selectUploadParent(key, summary, status) {
 
     // Show breadcrumb
     showUploadBreadcrumb(key, summary, status);
+
+    // Load and show existing test cases first
+    loadUploadExistingCases(key);
 }
 
 function showUploadBreadcrumb(key, summary, status) {
@@ -1865,6 +1982,7 @@ function showUploadBreadcrumb(key, summary, status) {
 
 function uploadBackToParentList() {
     document.getElementById('upload-content-section').style.display = 'none';
+    document.getElementById('upload-existing-section').style.display = 'none';
     document.getElementById('upload-parent-section').style.display = 'block';
     document.getElementById('upload-breadcrumb').style.display = 'none';
     document.getElementById('upload-project-section').style.display = 'none';
@@ -1877,6 +1995,7 @@ function uploadBackToParentList() {
 
 function uploadBackToProject() {
     document.getElementById('upload-content-section').style.display = 'none';
+    document.getElementById('upload-existing-section').style.display = 'none';
     document.getElementById('upload-parent-section').style.display = 'none';
     document.getElementById('upload-breadcrumb').style.display = 'none';
     document.getElementById('upload-project-section').style.display = 'block';
@@ -1920,6 +2039,221 @@ function createTestPlan() {
         }
     })
     .catch(function(e) { alert('创建失败: ' + e.message); });
+}
+
+
+// ============ Upload Tab: Existing Test Cases ============
+
+var uploadExistingCases = [];
+var uploadSelectedKeys = new Set();
+
+function loadUploadExistingCases(planKey) {
+    var tbody = document.getElementById('upload-existing-tbody');
+    var countEl = document.getElementById('upload-existing-count');
+    var statusEl = document.getElementById('upload-existing-status');
+    var section = document.getElementById('upload-existing-section');
+    
+    section.style.display = 'block';
+    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center; padding:20px; color:#999;">加载中...</td></tr>';
+    countEl.textContent = '...';
+    statusEl.textContent = '';
+    uploadSelectedKeys.clear();
+    updateUploadBatchDeleteBtn();
+    
+    // Fetch linked tasks for this plan
+    fetch('/api/testcase/testplan/linked-tasks/' + planKey, {
+        credentials: 'same-origin',
+        headers: authToken ? { 'Authorization': 'Bearer ' + authToken } : {}
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        if (!data.success || !data.data) throw new Error(data.error || '加载失败');
+        
+        var allTasks = data.data.tasks || [];
+        var directTasks = data.data.directTasks || [];
+        // Use direct tasks (only direct sub-tasks of this plan)
+        uploadExistingCases = directTasks.length > 0 ? directTasks : allTasks.filter(function(t) { return t.parent === planKey; });
+        
+        countEl.textContent = uploadExistingCases.length + ' 条';
+        if (uploadExistingCases.length === 0) {
+            statusEl.textContent = '该 Test Plan 下暂无 Test Case，点击上方按钮添加';
+            statusEl.style.color = '#999';
+        } else {
+            statusEl.textContent = '共 ' + uploadExistingCases.length + ' 条已有 Test Case，可查看或删除后再添加新的';
+            statusEl.style.color = '#666';
+        }
+        renderUploadExistingTable(uploadExistingCases);
+    })
+    .catch(function(e) {
+        tbody.innerHTML = '<tr><td colspan="7" style="text-align:center; padding:20px; color:#e74c3c;">加载失败: ' + e.message + '</td></tr>';
+        countEl.textContent = '0 条';
+        statusEl.textContent = '加载失败';
+        statusEl.style.color = '#e74c3c';
+    });
+}
+
+function renderUploadExistingTable(cases) {
+    var tbody = document.getElementById('upload-existing-tbody');
+    tbody.innerHTML = '';
+    
+    if (cases.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="7" style="text-align:center; padding:20px; color:#999;">暂无 Test Case</td></tr>';
+        return;
+    }
+    
+    cases.forEach(function(issue) {
+        var tr = document.createElement('tr');
+        tr.setAttribute('data-key', issue.key);
+        
+        // Checkbox
+        var tdChk = document.createElement('td');
+        tdChk.style.textAlign = 'center';
+        var chk = document.createElement('input');
+        chk.type = 'checkbox';
+        chk.checked = uploadSelectedKeys.has(issue.key);
+        chk.setAttribute('data-key', issue.key);
+        chk.addEventListener('change', function(e) {
+            var k = e.target.getAttribute('data-key');
+            if (e.target.checked) uploadSelectedKeys.add(k);
+            else uploadSelectedKeys.delete(k);
+            tr.classList.toggle('selected-row', e.target.checked);
+            updateUploadBatchDeleteBtn();
+        });
+        tdChk.appendChild(chk);
+        tr.appendChild(tdChk);
+        
+        // Key
+        var tdKey = document.createElement('td');
+        tdKey.innerHTML = '<a href="' + (issue.url || 'https://jira01.birentech.com/browse/' + issue.key) + '" target="_blank" style="color:#3498db; text-decoration:none; font-weight:600;">' + issue.key + '</a>';
+        tr.appendChild(tdKey);
+        
+        // Summary
+        var tdSummary = document.createElement('td');
+        tdSummary.textContent = issue.summary || '';
+        tdSummary.title = issue.summary || '';
+        tr.appendChild(tdSummary);
+        
+        // Status
+        var tdStatus = document.createElement('td');
+        tdStatus.innerHTML = getStatusBadge(issue.status);
+        tr.appendChild(tdStatus);
+        
+        // Assignee
+        var tdAssignee = document.createElement('td');
+        tdAssignee.textContent = issue.assignee || '-';
+        tr.appendChild(tdAssignee);
+        
+        // Priority
+        var tdPriority = document.createElement('td');
+        tdPriority.innerHTML = getPriorityHtml(issue.priority);
+        tr.appendChild(tdPriority);
+        
+        // Action - Delete button
+        var tdAction = document.createElement('td');
+        tdAction.style.textAlign = 'center';
+        var delBtn = document.createElement('button');
+        delBtn.className = 'btn btn-sm';
+        delBtn.style.cssText = 'background:none; color:#e74c3c; border:1px solid #e74c3c; padding:2px 6px; font-size:11px; cursor:pointer; border-radius:4px;';
+        delBtn.textContent = '🗑️';
+        delBtn.title = '删除 ' + issue.key;
+        delBtn.onclick = (function(k) { return function() { uploadDeleteIssue(k); }; })(issue.key);
+        tdAction.appendChild(delBtn);
+        tr.appendChild(tdAction);
+        
+        tbody.appendChild(tr);
+    });
+}
+
+function toggleUploadSelectAll(checked) {
+    if (checked) {
+        uploadExistingCases.forEach(function(i) { uploadSelectedKeys.add(i.key); });
+    } else {
+        uploadSelectedKeys.clear();
+    }
+    document.querySelectorAll('#upload-existing-tbody input[type="checkbox"]').forEach(function(cb) {
+        cb.checked = checked;
+        var tr = cb.closest('tr');
+        if (tr) tr.classList.toggle('selected-row', checked);
+    });
+    updateUploadBatchDeleteBtn();
+}
+
+function updateUploadBatchDeleteBtn() {
+    var btn = document.getElementById('upload-batch-delete-btn');
+    if (btn) {
+        btn.style.display = uploadSelectedKeys.size > 0 ? 'inline-flex' : 'none';
+        btn.textContent = '🗑️ 批量删除选中 (' + uploadSelectedKeys.size + ')';
+    }
+}
+
+function uploadDeleteIssue(key) {
+    if (!confirm('确定要删除 ' + key + ' 吗？此操作不可撤销。')) return;
+    
+    fetch('/api/testcase/delete/' + key, {
+        method: 'DELETE',
+        credentials: 'same-origin',
+        headers: authToken ? { 'Authorization': 'Bearer ' + authToken } : {}
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        if (data.success) {
+            uploadExistingCases = uploadExistingCases.filter(function(t) { return t.key !== key; });
+            uploadSelectedKeys.delete(key);
+            document.getElementById('upload-existing-count').textContent = uploadExistingCases.length + ' 条';
+            renderUploadExistingTable(uploadExistingCases);
+            updateUploadBatchDeleteBtn();
+        } else {
+            alert('删除失败: ' + (data.error || '未知错误'));
+        }
+    })
+    .catch(function(e) { alert('删除失败: ' + e.message); });
+}
+
+function uploadBatchDeleteIssues() {
+    if (uploadSelectedKeys.size === 0) { alert('请先选择要删除的项'); return; }
+    var count = uploadSelectedKeys.size;
+    if (!confirm('确定要删除选中的 ' + count + ' 个 Test Case 吗？此操作不可撤销。')) return;
+    
+    var keys = Array.from(uploadSelectedKeys);
+    var btn = document.getElementById('upload-batch-delete-btn');
+    if (btn) { btn.disabled = true; btn.textContent = '⏳ 删除中...'; }
+    
+    fetch('/api/testcase/batch-delete', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: {
+            'Content-Type': 'application/json',
+            ...(authToken ? { 'Authorization': 'Bearer ' + authToken } : {})
+        },
+        body: JSON.stringify({ keys: keys })
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        if (data.success && data.data) {
+            var deleted = data.data.deleted || 0;
+            var failed = data.data.failed || 0;
+            if (failed > 0) {
+                var errMsg = (data.data.errors || []).map(function(e) { return e.key + ': ' + e.error; }).join('\n');
+                alert('✅ 删除 ' + deleted + ' 条\n❌ 失败 ' + failed + ' 条\n\n' + errMsg);
+            } else {
+                alert('✅ 成功删除 ' + deleted + ' 条 Test Case');
+            }
+            // Reload existing cases
+            loadUploadExistingCases(uploadSelectedPlanKey);
+        } else {
+            alert('批量删除失败: ' + (data.error || '未知错误'));
+        }
+        if (btn) { btn.disabled = false; btn.textContent = '🗑️ 批量删除选中'; }
+    })
+    .catch(function(e) {
+        alert('批量删除失败: ' + e.message);
+        if (btn) { btn.disabled = false; btn.textContent = '🗑️ 批量删除选中'; }
+    });
+}
+
+function showUploadContentSection() {
+    document.getElementById('upload-existing-section').style.display = 'none';
+    document.getElementById('upload-content-section').style.display = 'block';
 }
 
 // ============ Natural Language Command ============
@@ -2516,7 +2850,7 @@ function llmEvalAfterUpload() {
         if (logEl) {
             var logs = logEl.textContent;
             var elapsed = window._llmActualStartTime ? ((Date.now() - window._llmActualStartTime) / 1000).toFixed(0) : null;
-            if (logs.indexOf('Test Plan 描述已更新: ' + uploadSelectedPlanKey) !== -1 || logs.indexOf('LLM硬件专家评估 Test Plan 完毕') !== -1) {
+            if (logs.indexOf('✅ LLM 专家评估完成，正在更新 JIRA...') !== -1 && logs.indexOf('✅ Test Plan 描述已更新: ' + uploadSelectedPlanKey) !== -1) {
                 clearInterval(checkInterval);
                 if (btn) { btn.disabled = false; btn.textContent = '🧠 LLM评估上传的sub task'; }
                 if (ubcBtn2) { ubcBtn2.disabled = false; ubcBtn2.textContent = '🧠 LLM重新评估'; }
@@ -2568,10 +2902,13 @@ function showLlmEvalStatus(status, text) {
 }
 
 function updatePlanDescription(planKey, skipStep3) {
+    // Clear progress log from previous runs to prevent polling false-positive
+    var logEl = document.getElementById('progress-log');
+    if (logEl) logEl.innerHTML = '';
     addLog('📝 正在生成 Test Plan 描述摘要...', 'ok');
     showLlmEvalStatus('loading', '正在获取 Sub-task 列表...');
 
-    fetch('/api/testcase/testplan/linked-tasks/' + planKey, {
+    fetch('/api/testcase/testplan/linked-tasks/' + planKey + '?_t=' + Date.now(), {
         credentials: 'same-origin',
         headers: { 'Authorization': 'Bearer ' + authToken }
     })
@@ -2777,14 +3114,34 @@ function generateAndUploadDescription(tasks, planSummary, planKey) {
             return { key: t.key, summary: t.summary, description: t.description || '', status: t.status || '', priority: t.priority || '', parent: t.parent || '' };
         });
 
+        // Check if existing categorization JIRA IDs match current tasks
+        var catIdsMatch = true;
         if (hasCategorization) {
-            // Already categorized → skip categorize, go directly to evaluate
-            addLog('✅ 已检测到分类信息，跳过分类步骤，直接进行专家评估', 'ok');
+            var currentKeys = {};
+            tasks.forEach(function(t) { currentKeys[t.key] = true; });
+            var catIdRegex = /\|?(BR200-\d+)/g;
+            var catMatch;
+            var catIds = {};
+            while ((catMatch = catIdRegex.exec(existingCatPart)) !== null) {
+                catIds[catMatch[1]] = true;
+            }
+            // Check: current tasks should all appear in categorization, and no extra stale IDs
+            var missingInCat = tasks.filter(function(t) { return !catIds[t.key]; });
+            var staleInCat = Object.keys(catIds).filter(function(k) { return !currentKeys[k]; });
+            if (missingInCat.length > 0 || staleInCat.length > 0) {
+                catIdsMatch = false;
+                addLog('⚠️ 分类中的JIRA ID与当前sub-tasks不匹配 (缺失' + missingInCat.length + '条, 过期' + staleInCat.length + '条)，需重新分类', 'err');
+            }
+        }
+
+        if (hasCategorization && catIdsMatch) {
+            // Already categorized with correct IDs → skip categorize, go directly to evaluate
+            addLog('✅ 已检测到分类信息且JIRA ID一致，跳过分类步骤，直接进行专家评估', 'ok');
             showLlmEvalStatus('loading', '已分类，直接专家评估中...');
             return doEvaluateOnly(taskMapped, planSummary, planKey, existingCatPart, existingEval);
         } else {
-            // Not categorized → run categorize first, then evaluate
-            addLog('🤖 未检测到分类信息，开始分类...', 'ok');
+            // Not categorized or IDs mismatched → run categorize first, then evaluate
+            addLog(catIdsMatch ? '🤖 未检测到分类信息，开始分类...' : '🔄 分类JIRA ID已过期，重新分类...', 'ok');
             showLlmEvalStatus('loading', 'LLM分类测试用例中...');
             return doCategorizeThenEvaluate(taskMapped, planSummary, planKey);
         }
@@ -2834,14 +3191,20 @@ function generateAndUploadDescription(tasks, planSummary, planKey) {
 
     function buildFinalDescription(llmResult, catPart, existingEval, planKey) {
         var desc = catPart || '';
+        var taskCount = tasks ? tasks.length : 0;
+        addLog('📋 buildFinalDescription: catPart长度=' + (catPart || '').length + ', planKey=' + planKey, 'ok');
         if (llmResult.success && llmResult.data && llmResult.data.evaluation) {
-            addLog('✅ LLM 专家评估完成', 'ok');
-            showLlmEvalStatus('ok', '✅ LLM硬件专家评估 Test Plan 完毕');
-            var evalText = llmResult.data.evaluation;
+            var rawEval = llmResult.data.evaluation;
+            addLog('✅ LLM 专家评估完成，原始评估长度=' + rawEval.length + '，正在更新 JIRA...', 'ok');
+            showLlmEvalStatus('loading', '正在将评估结果写入 JIRA...');
+            var evalText = rawEval;
             evalText = evalText.replace(/h3\.\s*分类复盘[：:]?[\s\S]*?(?=\nh3\.|$)/g, '').trim();
             evalText = evalText.replace(/分类复盘[：:][\s\S]*?(?=\nh3\.|$)/g, '').trim();
+            addLog('📋 去除分类复盘后评估长度=' + evalText.length, 'ok');
             if (evalText) {
                 desc += 'h2. 🔍 专家评估 (LLM)\n\n' + evalText + '\n\n';
+            } else {
+                addLog('⚠️ 评估文本去除分类复盘后为空，不追加评估', 'err');
             }
         } else {
             addLog('⚠️ LLM 评估失败: ' + (llmResult.error || '未知原因') + '，保留已有评估', 'err');
@@ -2851,11 +3214,22 @@ function generateAndUploadDescription(tasks, planSummary, planKey) {
             }
         }
 
+        addLog('📋 即将写入JIRA的描述总长度=' + desc.length + ', 包含评估=' + (desc.indexOf('专家评估') !== -1), 'ok');
         return fetch('/api/testcase/testplan/description', {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + authToken },
             body: JSON.stringify({ planKey: planKey, description: desc })
-        }).then(function(r) { return r.json(); });
+        }).then(function(r) { return r.json(); }).then(function(putResult) {
+            // Only show success AFTER PUT succeeds
+            if (putResult && putResult.success !== false) {
+                addLog('✅ JIRA描述更新成功，总长度=' + desc.length, 'ok');
+                showLlmEvalStatus('ok', taskCount + '条测试用例描述增强成功，测试方案LLM专家评估完成');
+            } else {
+                addLog('❌ JIRA描述更新失败: ' + (putResult.error || '请检查权限'), 'err');
+                showLlmEvalStatus('err', 'JIRA描述更新失败: ' + (putResult.error || '请检查权限'));
+            }
+            return putResult;
+        });
     }
 }
 
@@ -2894,8 +3268,18 @@ function regeneratePlanDescription(skipStep3) {
     if (ubcBtn) { ubcBtn.disabled = true; ubcBtn.textContent = '⏳ 评估中...'; }
     updateStatus('⏳ 正在评估中...', '#2563eb');
 
-    // Call updatePlanDescription which handles the full flow
-    updatePlanDescription(planKey, skipStep3);
+    // Clear progress log
+    var logEl = document.getElementById('progress-log');
+    if (logEl) logEl.innerHTML = '';
+
+    if (skipStep3) {
+        // "LLM重新评估" - only do Step 4 (expert evaluation)
+        // Descriptions already enhanced, just re-evaluate the plan
+        reEvalPlanDescription(planKey, startTime, btn, ubcBtn, updateStatus);
+    } else {
+        // Full flow: Step 3 (description enhance) + Step 4 (expert eval)
+        updatePlanDescription(planKey, false);
+    }
 
     // Monitor completion via a simple polling (max 10 minutes)
     var checkCount = 0;
@@ -2905,7 +3289,7 @@ function regeneratePlanDescription(skipStep3) {
         if (logEl) {
             var logs = logEl.textContent;
             var elapsed = window._llmActualStartTime ? ((Date.now() - window._llmActualStartTime) / 1000).toFixed(0) : null;
-            if (logs.indexOf('Test Plan 描述已更新: ' + planKey) !== -1 || logs.indexOf('LLM硬件专家评估 Test Plan 完毕') !== -1) {
+            if (logs.indexOf('✅ LLM 专家评估完成，正在更新 JIRA...') !== -1 && logs.indexOf('✅ Test Plan 描述已更新: ' + planKey) !== -1) {
                 clearInterval(checkInterval);
                 if (btn) { btn.disabled = false; btn.textContent = '🧠 LLM 评估 Test Plan'; }
                 if (ubcBtn) { ubcBtn.disabled = false; ubcBtn.textContent = '🧠 LLM重新评估'; }
@@ -3144,6 +3528,128 @@ function searchJiraUser(name, callback) {
         callback(name);
     });
 }
+
+
+// ============ Step 4 Only: Expert Evaluation ============
+function reEvalPlanDescription(planKey, startTime, btn, ubcBtn, updateStatus) {
+    addLog('🧠 开始 LLM 专家评估 Test Plan: ' + planKey, 'ok');
+    showLlmEvalStatus('loading', '正在获取 Test Plan 信息...');
+
+    // Step 1: Get sub-tasks (always fresh, no cache)
+    fetch('/api/testcase/testplan/linked-tasks/' + planKey + '?_t=' + Date.now(), {
+        credentials: 'same-origin',
+        headers: { 'Authorization': 'Bearer ' + authToken }
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        if (!data.success || !data.data) throw new Error(data.error || '加载sub-tasks失败');
+        var allTasks = data.data.tasks || [];
+        var directTasks = data.data.directTasks || [];
+        var tasks = directTasks.length > 0 ? directTasks : allTasks.filter(function(t) { return t.parent === planKey; });
+        var planSummary = data.data.planSummary || planKey;
+        addLog('📋 获取到 ' + tasks.length + ' 条直接 sub-tasks', 'ok');
+
+        var taskMapped = tasks.map(function(t) {
+            return { key: t.key, summary: t.summary, description: t.description || '', status: t.status || '', priority: t.priority || '', parent: t.parent || '' };
+        });
+
+        return { tasks: tasks, taskMapped: taskMapped, planSummary: planSummary };
+    })
+    .then(function(context) {
+        if (!context) return null;
+        window._llmActualStartTime = Date.now();
+
+        // Step 2: Always re-categorize with fresh task data
+        addLog('🤖 正在重新分类 ' + context.tasks.length + ' 条用例...', 'ok');
+        showLlmEvalStatus('loading', 'LLM 分类测试用例中... (' + context.tasks.length + ' 条)');
+        return fetch('/api/testcase/testplan/llm-evaluate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + authToken },
+            body: JSON.stringify({ planKey: planKey, planSummary: context.planSummary, tasks: context.taskMapped, mode: 'categorize' })
+        }).then(function(r) {
+            var ct = r.headers.get('content-type');
+            if (ct && ct.indexOf('text/html') !== -1) throw new Error('服务器超时返回HTML，请重试');
+            return r.json();
+        }).then(function(catResult) {
+            if (!catResult.success || !catResult.data || !catResult.data.description) {
+                addLog('⚠️ LLM分类失败: ' + (catResult.error || '未知原因'), 'err');
+                throw new Error('分类失败: ' + (catResult.error || '未知原因'));
+            }
+            addLog('✅ LLM分类完成，长度=' + catResult.data.description.length, 'ok');
+            context.catDesc = catResult.data.description;
+
+            // Step 3: Call LLM evaluate with new categorization
+            addLog('🤖 正在调用 LLM 专家评估...', 'ok');
+            showLlmEvalStatus('loading', 'LLM 专家评估中... (' + context.tasks.length + ' 条用例)');
+            return fetch('/api/testcase/testplan/llm-evaluate', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + authToken },
+                body: JSON.stringify({
+                    planKey: planKey,
+                    planSummary: context.planSummary,
+                    tasks: context.taskMapped,
+                    existingEvaluation: '',
+                    existingDescription: context.catDesc
+                })
+            }).then(function(r) {
+                var ct = r.headers.get('content-type');
+                if (ct && ct.indexOf('text/html') !== -1) throw new Error('服务器超时返回HTML，请重试');
+                return r.json();
+            }).then(function(llmResult) {
+                // Step 4: Build final description with NEW categorization + new evaluation
+                var desc = context.catDesc || '';
+                if (llmResult.success && llmResult.data && llmResult.data.evaluation) {
+                    var rawEval = llmResult.data.evaluation;
+                    addLog('✅ LLM 评估完成，原始长度=' + rawEval.length, 'ok');
+                    var evalText = rawEval;
+                    evalText = evalText.replace(/h3\.\s*分类复盘[：:]?[\s\S]*?(?=\nh3\.|$)/g, '').trim();
+                    evalText = evalText.replace(/分类复盘[：:][\s\S]*?(?=\nh3\.|$)/g, '').trim();
+                    addLog('📋 去除分类复盘后长度=' + evalText.length, 'ok');
+                    if (evalText) {
+                        desc += 'h2. 🔍 专家评估 (LLM)\n\n' + evalText + '\n\n';
+                    }
+                    showLlmEvalStatus('loading', '正在写入 JIRA...');
+                } else {
+                    addLog('⚠️ LLM 评估失败: ' + (llmResult.error || '未知原因'), 'err');
+                }
+
+                addLog('📋 写入JIRA: 描述总长度=' + desc.length + ', 包含评估=' + (desc.indexOf('专家评估') !== -1), 'ok');
+
+                // Step 5: PUT to JIRA
+                return fetch('/api/testcase/testplan/description', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + authToken },
+                    body: JSON.stringify({ planKey: planKey, description: desc })
+                }).then(function(r) { return r.json(); }).then(function(putResult) {
+                    var elapsed = ((Date.now() - startTime) / 1000).toFixed(0);
+                    if (putResult && putResult.success !== false) {
+                        addLog('✅ JIRA 描述更新成功，长度=' + desc.length, 'ok');
+                        showLlmEvalStatus('ok', taskCount(context.tasks) + '条测试用例分类+评估完成 (耗时' + elapsed + '秒)');
+                        if (btn) { btn.disabled = false; btn.textContent = '🧠 LLM 评估 Test Plan'; }
+                        if (ubcBtn) { ubcBtn.disabled = false; ubcBtn.textContent = '🧠 LLM重新评估'; }
+                        if (updateStatus) updateStatus('✅ 完成，耗时 ' + elapsed + ' 秒', '#16a34a');
+                    } else {
+                    addLog('❌ JIRA 更新失败: ' + (putResult.error || '未知错误'), 'err');
+                    showLlmEvalStatus('err', 'JIRA更新失败: ' + (putResult.error || '请检查权限'));
+                    if (btn) { btn.disabled = false; btn.textContent = '🧠 LLM 评估 Test Plan'; }
+                    if (ubcBtn) { ubcBtn.disabled = false; ubcBtn.textContent = '🧠 LLM重新评估'; }
+                    if (updateStatus) updateStatus('❌ 更新失败', '#dc2626');
+                }
+            });
+        });
+    })
+    })
+    .catch(function(e) {
+        var elapsed = ((Date.now() - startTime) / 1000).toFixed(0);
+        addLog('❌ 评估失败: ' + e.message, 'err');
+        showLlmEvalStatus('err', '评估失败: ' + e.message + ' (耗时' + elapsed + '秒)');
+        if (btn) { btn.disabled = false; btn.textContent = '🧠 LLM 评估 Test Plan'; }
+        if (ubcBtn) { ubcBtn.disabled = false; ubcBtn.textContent = '🧠 LLM重新评估'; }
+        if (updateStatus) updateStatus('❌ 失败', '#dc2626');
+    });
+}
+
+function taskCount(tasks) { return tasks ? tasks.length : 0; }
 
 // ============ Date Setting Modal ============
 function showDateModal() {

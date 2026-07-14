@@ -195,6 +195,24 @@ jira-testcase-manager/
 
 ## 版本历史
 
+### v1.6.0 (2026-07-13)
+基于 v1.5.3 新增以下修复：
+
+**LLM 评估分类刷新修复（核心）**
+- 修复"LLM重新评估"按钮复用旧分类导致 JIRA ID 过期的问题
+- `reEvalPlanDescription`：每次重新分类，不再复用旧 `existingCatPart`
+- `generateAndUploadDescription`：新增 JIRA ID 匹配检测（`missingInCat` / `staleInCat`），ID 不一致时自动重新分类
+- 评估流程改为：分类(categorize) → 评估(evaluate)，确保分类始终基于最新 sub-tasks
+
+**防浏览器缓存**
+- `updatePlanDescription` 和 `reEvalPlanDescription` 的 linked-tasks 请求添加 `?_t=` 时间戳防缓存
+- 前端版本 v85
+
+**后端增强**
+- 新增 `DELETE /api/testcase/delete/:key` 单条删除接口
+- 新增 `POST /api/testcase/batch-delete` 批量删除接口
+- Plan description 更新时添加日志输出
+
 ### v1.5.3 (2026-06-30)
 基于 v1.5.2 新增以下优化：
 

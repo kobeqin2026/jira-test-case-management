@@ -436,6 +436,7 @@
                         <option value="">-- 选择目标状态 --</option>
                     </select>
                     <button class="btn btn-primary btn-sm" onclick="batchApplyStatus()">✓ 应用状态</button>
+                    <button class="btn btn-sm" id="batch-delete-btn" onclick="batchDeleteIssues()" style="background:#e74c3c; color:#fff; padding:5px 12px; font-size:12px;">🗑️ 批量删除</button>
                     <button class="btn btn-outline btn-sm" onclick="clearSelection()">取消选择</button>
                 </div>
 
@@ -546,6 +547,39 @@
                     <div style="display:flex; gap:8px; justify-content:flex-end;">
                         <button class="btn btn-outline btn-sm" onclick="toggleCreatePlan()">取消</button>
                         <button class="btn btn-primary btn-sm" onclick="createTestPlan()">✅ 创建</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Upload Step 2.5: Existing test cases (shown after selecting plan) -->
+            <div id="upload-existing-section" style="display:none;">
+                <div class="card" style="margin-bottom:16px;">
+                    <h3 style="justify-content:space-between;">
+                        <span>📋 已有 Test Cases <span class="badge" id="upload-existing-count"></span></span>
+                        <span style="display:flex; align-items:center; gap:10px;">
+                            <button class="btn btn-primary btn-sm" onclick="showUploadContentSection()" id="btn-add-new-tc">➕ 添加新 Test Case</button>
+                        </span>
+                    </h3>
+                    <div id="upload-existing-status" style="margin-bottom:12px; font-size:13px; color:#666;"></div>
+                    <div class="table-wrap" style="max-height:400px;">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th style="width:36px; text-align:center;"><input type="checkbox" id="upload-select-all-cb" onchange="toggleUploadSelectAll(this.checked)" /></th>
+                                    <th style="width:120px;">Key</th>
+                                    <th>标题</th>
+                                    <th style="width:120px;">状态</th>
+                                    <th style="width:100px;">负责人</th>
+                                    <th style="width:80px;">优先级</th>
+                                    <th style="width:60px; text-align:center;">操作</th>
+                                </tr>
+                            </thead>
+                            <tbody id="upload-existing-tbody"></tbody>
+                        </table>
+                    </div>
+                    <div style="margin-top:12px; display:flex; align-items:center; gap:12px;">
+                        <button class="btn btn-sm" id="upload-batch-delete-btn" onclick="uploadBatchDeleteIssues()" style="background:#e74c3c; color:#fff; padding:5px 12px; font-size:12px; display:none;">🗑️ 批量删除选中</button>
+                        <span id="upload-existing-filter-count" style="font-size:12px; color:#888;"></span>
                     </div>
                 </div>
             </div>
@@ -743,6 +777,6 @@
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
-    <script src="/js/testcase-upload.js?v=79"></script>
+    <script src="/js/testcase-upload.js?v=85"></script>
 </body>
 </html>

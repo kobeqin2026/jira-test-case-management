@@ -846,6 +846,7 @@ router.put('/testplan/description', auth.authenticateToken, async function(req, 
         };
 
         await jiraRequest('PUT', '/rest/api/2/issue/' + planKey, issueBody, userPat);
+        console.log('[TestCase] Updated plan description:', planKey, '- length:', (body.description || '').length);
         res.json({ success: true });
     } catch (error) {
         console.error('[TestCase] Update plan description error:', error.message);
@@ -1681,6 +1682,67 @@ router.get('/search-user', auth.authenticateToken, async function(req, res) {
         res.json({ success: true, data: { users: users, bestMatch: bestMatch } });
     } catch (error) {
         console.error('[TestCase] Search user error:', error.message);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+
+/**
+ * DELETE /api/testcase/delete/:key
+ * Delete a JIRA issue
+ */
+router.delete('/delete/:key', auth.authenticateToken, async function(req, res) {
+    try {
+        var key = sanitizeKey(req.params.key);
+        if (!key) return res.status(400).json({ success: false, error: 'Invalid key' });
+
+        var userPat = req.user.jiraPat || '';
+        await jiraRequest('DELETE', '/rest/api/2/issue/' + key, null, userPat);
+        console.log('[TestCase] Deleted issue:', key);
+        res.json({ success: true, data: { key: key } });
+    } catch (error) {
+        console.error('[TestCase] Delete error:', error.message);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+/**
+ * POST /api/testcase/batch-delete
+ * Batch delete JIRA issues
+ * Body: { keys: ["BR200-xxx", ...] }
+ */
+router.post('/batch-delete', auth.authenticateToken, async function(req, res) {
+    try {
+        var body = req.body;
+        var keys = (body.keys || []).map(function(k) { return sanitizeKey(k); }).filter(Boolean);
+        if (keys.length === 0) {
+            return res.status(400).json({ success: false, error: 'keys为必填项' });
+        }
+
+        var userPat = req.user.jiraPat || '';
+        var results = [];
+        var errors = [];
+
+        for (var i = 0; i < keys.length; i++) {
+            try {
+                await jiraRequest('DELETE', '/rest/api/2/issue/' + keys[i], null, userPat);
+                results.push({ key: keys[i], status: 'deleted' });
+                console.log('[TestCase] Deleted issue:', keys[i]);
+            } catch (err) {
+                errors.push({ key: keys[i], error: err.message });
+                console.error('[TestCase] Delete failed:', keys[i], err.message);
+            }
+            if (i < keys.length - 1) {
+                await new Promise(function(r) { setTimeout(r, 100); });
+            }
+        }
+
+        res.json({
+            success: true,
+            data: { total: keys.length, deleted: results.length, failed: errors.length, errors: errors }
+        });
+    } catch (error) {
+        console.error('[TestCase] Batch delete error:', error.message);
         res.status(500).json({ success: false, error: error.message });
     }
 });
