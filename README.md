@@ -80,17 +80,17 @@ npm install
 
 ```bash
 # JIRA 配置
-JIRA_BASE_URL=https://jira01.birentech.com
+JIRA_BASE_URL=https://jira.example.com
 JIRA_PAT=your_jira_pat_here
 
 # LLM 配置
 BAILIAN_API_KEY=your_api_key_here
-BAILIAN_BASE_URL=https://aiapiidc.birentech.com/v1
+BAILIAN_BASE_URL=https://llm.example.com/v1
 BAILIAN_MODEL=br-qwen3
 
 # 系统配置
-DEFAULT_ADMIN_PASSWORD=admin123
-DEFAULT_USER_PASSWORD=user123
+DEFAULT_ADMIN_PASSWORD=CHANGE_ME
+DEFAULT_USER_PASSWORD=CHANGE_ME
 ```
 
 ### 3. 启动服务
@@ -187,12 +187,6 @@ jira-testcase-manager/
 | POST | `/api/testcase/ai-parse` | AI 自然语言解析为 JIRA 操作 |
 | GET | `/api/testcase/template` | 下载 CSV 上传模板 |
 
-## 默认账号
-
-| 用户名 | 密码 | 角色 |
-|--------|------|------|
-| admin | admin123 | 管理员 |
-
 ## 版本历史
 
 ### v1.6.1 (2026-08-27)
@@ -200,7 +194,7 @@ jira-testcase-manager/
 
 **统一用户登录（Hardware 平台账号回退）**
 - 本地账号校验失败时自动回退校验 Hardware 平台用户库（127.0.0.1:3002 /api/users/login）
-- 支持 Hardware 统一账号：admin 管理员 / Domain Owner（board、firmware、diag、pcie 等）直接登录
+- 支持 Hardware 统一账号：admin 管理员 / Domain Owner（各域团队账号）直接登录
 - Hardware 账号不在本地 users.json：JIRA PAT / JIRA 用户名设置写入会话（GET/PUT /api/auth/profile 兼容），无需在本地建号
 
 **reporter 字段守卫修复（核心）**
@@ -211,7 +205,7 @@ jira-testcase-manager/
 
 **批量上传交互增强**
 - 统一 API 失败提示：401 显示「登录已失效，请刷新重新登录」引导；其他错误展示服务端错误原文
-- 新建 Test Plan 支持显式指定 issuetype（Test Plan / Epic / Task 白名单校验），兼容 BR288Y 计划树
+- 新建 Test Plan 支持显式指定 issuetype（Test Plan / Epic / Task 白名单校验），兼容计划树
 - 已有用例区无直属用例时展示整棵子树用例（含子测试计划下用例）并标注来源
 - 批量上传面包屑区新增「➕ 新建 Test Plan」快捷入口
 - 前端版本 v87
@@ -282,7 +276,7 @@ jira-testcase-manager/
 **后端 sub-task 过滤兜底**
 - `llm-evaluate` 接口增加后端过滤：确保只处理当前 plan 的直接 sub-tasks
 - 前端未传 parent 字段时（旧浏览器缓存），后端自动从 JIRA 查询 `parent = planKey` 的 sub-tasks
-- 解决了关联 plan 的 sub-tasks 被错误计入的问题（如 BR200-768 的 10 条 CP 用例混入 BR200-132 的 49 条 diag 用例）
+- 解决了关联 plan 的 sub-tasks 被错误计入的问题（如关联 issue 跨计划被错误计入）
 - `linked-tasks` 接口返回的 59 条关联任务，LLM 评估只处理当前 plan 的直接子任务
 
 **Categorize JSON 解析加固**

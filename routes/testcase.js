@@ -118,7 +118,7 @@ function jiraRequest(method, apiPath, body, userPat) {
 
 /**
  * 解析创建 issue 时 reporter 字段的 JIRA 有效 username。
- * jira01 实例 JIRA 用户名均为 E 工号(E\d+); 传显示名/应用登录名(如 Kobe Qin / kobe)
+ * JIRA 实例用户名为 E 工号(E\d+); 传显示名/应用登录名(如 Kobe Qin / kobe)
  * 会 400 "The reporter specified is not a user."。
  * 解析顺序:
  * 1. session 已配置 E 工号 jiraName → 直接用
@@ -430,9 +430,9 @@ router.post('/batch-create', auth.authenticateToken, async function(req, res) {
  */
 router.get('/template', function(req, res) {
     var csv = '\uFEFF项目Key,Issue类型,标题,描述,优先级,标签,负责人,父任务Key\n';
-    csv += 'BR200,Task,PCIe Gen3链路训练测试,验证LTSSM状态机在Gen3速率下的训练过程,Highest,"pcie;ltssm",qin.ke,\n';
-    csv += 'BR200,Sub-task,IOMMU地址翻译测试,测试DMA地址翻译功能,High,"iommu;dma",qin.ke,BR200-100\n';
-    csv += 'BR200,Task,GPIO中断测试,验证GPIO中断触发和处理,Medium,gpio,\n';
+    csv += 'DEMO-TC,Task,PCIe Gen3链路训练测试,验证LTSSM状态机在Gen3速率下的训练过程,Highest,"pcie;ltssm",qin.ke,\n';
+    csv += 'DEMO-TC,Sub-task,IOMMU地址翻译测试,测试DMA地址翻译功能,High,"iommu;dma",qin.ke,DEMO-TC-100\n';
+    csv += 'DEMO-TC,Task,GPIO中断测试,验证GPIO中断触发和处理,Medium,gpio,\n';
 
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', 'attachment; filename="testcase-template.csv"');
@@ -519,7 +519,7 @@ router.get('/search', auth.authenticateToken, async function(req, res) {
         if (status) {
             jqlParts.push('status = "' + status.replace(/"/g, '\\"') + '"');
         }
-        // Support parent filter (e.g. parent=BR200-130)
+        // Support parent filter (e.g. parent=DEMO-TC-130)
         var parentKey = req.query.parent;
         if (parentKey) {
             var safeParent = sanitizeKey(parentKey);
@@ -793,7 +793,7 @@ router.post('/testplan', auth.authenticateToken, async function(req, res) {
         // reporter 必须为 JIRA 有效 E 工号; jiraName 缺失/非 E 工号时经 /myself 解析到 PAT owner
         var reporterName = await resolveReporterName(userJiraName, userPat);
 
-        // issue type 白名单: 前端批量上传新建 Test Plan 传 'Test Plan' (BR200/BR288Y 计划树为 Test Plan 类型);
+        // issue type 白名单: 前端批量上传新建 Test Plan 传 'Test Plan' (计划树为 Test Plan 类型);
         // 默认 'Epic' 兼容旧调用。防注入: 仅接受精确白名单
         var issueType = 'Epic';
         if (body.issuetype) {
@@ -1100,7 +1100,7 @@ router.post('/testplan/llm-evaluate', auth.authenticateToken, async function(req
 
         var cfg = require('../lib/jiraConfig');
         var API_KEY = process.env['LLM_API_KEY'] || process.env['BAILIAN_API_KEY'] || '';
-        var BASE_URL = cfg.llmBaseUrl || process.env.LLM_BASE_URL || process.env.BAILIAN_BASE_URL || 'https://aiapiidc.birentech.com/v1';
+        var BASE_URL = cfg.llmBaseUrl || process.env.LLM_BASE_URL || process.env.BAILIAN_BASE_URL || 'https://llm.example.com/v1';
         var MODEL = cfg.llmModel || process.env.LLM_MODEL || process.env.BAILIAN_MODEL || 'br-qwen3';
 
         if (!API_KEY) {
@@ -1177,8 +1177,8 @@ router.post('/testplan/llm-evaluate', auth.authenticateToken, async function(req
                 '你需要为测试用例补充完善描述：' +
                 '1. 如果测试用例没有描述，根据标题生成专业描述，包含测试目的和期望预期。' +
                 '2. 如果测试用例已有描述，保留原有内容，在其基础上补充测试目的和期望预期。' +
-                '请返回JSON格式：{"descriptions": {"BR200-xxx": "描述1", "BR200-yyy": "描述2"}}' +
-                '注意：JSON的key必须是issue key（如BR200-315），不是完整标题。' +
+                '请返回JSON格式：{"descriptions": {"EXAMPLE-xxx": "描述1", "EXAMPLE-yyy": "描述2"}}' +
+                '注意：JSON的key必须是issue key（如EXAMPLE-315），不是完整标题。' +
                 '返回所有测试用例的描述。使用中文，描述简洁专业。';
 
             function buildBatchPrompt(b) {
@@ -1234,7 +1234,7 @@ router.post('/testplan/llm-evaluate', auth.authenticateToken, async function(req
                 'CP维度：HCQD调度/Barrier/EventWait/MMIO/原子操作/SDMA。' +
                 'HBM维度：初始化/通道读写/PHY训练/UCIe互联。' +
                 'KMD维度：内存管理/命令处理/计算单元/中断控制。' +
-                '返回JSON：{"categories":[{"name":"类别","items":[{"key":"BR200-xxx","summary":"标题","description":"≤50字描述"}]}]}';
+                '返回JSON：{"categories":[{"name":"类别","items":[{"key":"EXAMPLE-xxx","summary":"标题","description":"≤50字描述"}]}]}';
 
             var catUserPrompt = 'Test Plan: ' + planKey + ' - ' + planSummary + '\n\n';
             catUserPrompt += '测试用例（共 ' + tasks.length + ' 项）：\n' + taskList;
@@ -1409,7 +1409,7 @@ router.post('/testplan/llm-evaluate', auth.authenticateToken, async function(req
 /**
  * POST /api/testcase/testplan/update-descriptions
  * Batch update sub-task descriptions in JIRA
- * Body: { descriptions: { "BR200-xxx": "desc1", "BR200-yyy": "desc2" } }
+ * Body: { descriptions: { "EXAMPLE-xxx": "desc1", "EXAMPLE-yyy": "desc2" } }
  */
 router.post('/testplan/update-descriptions', auth.authenticateToken, async function(req, res) {
     try {
@@ -1528,7 +1528,7 @@ router.post('/ai-generate', auth.authenticateToken, async function(req, res) {
 
         var cfg = require('../lib/jiraConfig');
         var API_KEY = process.env['LLM_API_KEY'] || process.env['BAILIAN_API_KEY'] || '';
-        var BASE_URL = cfg.llmBaseUrl || process.env.LLM_BASE_URL || process.env.BAILIAN_BASE_URL || 'https://aiapiidc.birentech.com/v1';
+        var BASE_URL = cfg.llmBaseUrl || process.env.LLM_BASE_URL || process.env.BAILIAN_BASE_URL || 'https://llm.example.com/v1';
         var MODEL = cfg.llmModel || process.env.LLM_MODEL || process.env.BAILIAN_MODEL || 'br-qwen3';
 
         if (!API_KEY) {
@@ -1614,7 +1614,7 @@ router.post('/ai-generate', auth.authenticateToken, async function(req, res) {
 /**
  * POST /api/testcase/batch-update-dates
  * Batch update Actual Start Date and Actual End Date for multiple issues
- * Body: { keys: ["BR200-130", ...], actualStartDate: "2026-06-23", actualEndDate: "2026-06-25" }
+ * Body: { keys: ["EXAMPLE-130", ...], actualStartDate: "2026-06-23", actualEndDate: "2026-06-25" }
  */
 router.post('/batch-update-dates', auth.authenticateToken, async function(req, res) {
     try {
@@ -1742,7 +1742,7 @@ router.delete('/delete/:key', auth.authenticateToken, async function(req, res) {
 /**
  * POST /api/testcase/batch-delete
  * Batch delete JIRA issues
- * Body: { keys: ["BR200-xxx", ...] }
+ * Body: { keys: ["EXAMPLE-xxx", ...] }
  */
 router.post('/batch-delete', auth.authenticateToken, async function(req, res) {
     try {

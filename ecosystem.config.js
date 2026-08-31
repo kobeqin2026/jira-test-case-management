@@ -26,13 +26,13 @@ module.exports = {
     env: {
       NODE_ENV: 'production',
       PORT: 3001,
-      JIRA_BASE_URL: process.env.JIRA_BASE_URL || 'https://jira01.birentech.com',
+      JIRA_BASE_URL: process.env.JIRA_BASE_URL || 'https://jira.example.com',
       JIRA_PAT: process.env.JIRA_PAT || '',
       BAILIAN_API_KEY: process.env.BAILIAN_API_KEY || '',
-      BAILIAN_BASE_URL: process.env.BAILIAN_BASE_URL || 'https://aiapiidc.birentech.com/v1',
+      BAILIAN_BASE_URL: process.env.BAILIAN_BASE_URL || 'https://llm.example.com/v1',
       BAILIAN_MODEL: process.env.BAILIAN_MODEL || 'br-qwen3',
-      DEFAULT_ADMIN_PASSWORD: process.env.DEFAULT_ADMIN_PASSWORD || 'admin123',
-      DEFAULT_USER_PASSWORD: process.env.DEFAULT_USER_PASSWORD || 'user123'
+      DEFAULT_ADMIN_PASSWORD: process.env.DEFAULT_ADMIN_PASSWORD || 'CHANGE_ME',
+      DEFAULT_USER_PASSWORD: process.env.DEFAULT_USER_PASSWORD || 'CHANGE_ME'
     }
   }]
 };

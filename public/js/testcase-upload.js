@@ -1,6 +1,23 @@
 // JIRA Test Case Management — Frontend Logic
 // Step 1: Select project → Step 2: Select Task/Test Plan → Step 3: KPI + Detail
 
+// ============ 运行配置(env 注入, 公开仓默认占位) ============
+var APP_CONFIG = { jiraBase: '', tcProject: '' };
+(function(){
+    try {
+        var cached = localStorage.getItem('tc_app_config');
+        if (cached) APP_CONFIG = JSON.parse(cached);
+    } catch (e) {}
+    fetch('/api/config').then(function(r){ return r.json(); }).then(function(cfg){
+        if (cfg && cfg.jiraBase) {
+            APP_CONFIG = cfg;
+            try { localStorage.setItem('tc_app_config', JSON.stringify(cfg)); } catch (e) {}
+        }
+    }).catch(function(){});
+})();
+
+function browseHref(key){ return (APP_CONFIG.jiraBase || 'https://jira.example.com') + '/browse/' + key; }
+
 // ============ Chart.js Pie Label Plugin ============
 var pieLabelPlugin = {
     id: 'pieLabel',
@@ -463,7 +480,7 @@ function showBreadcrumb(project, parentKey, parentSummary, parentStatus) {
     bcBackProject.style.display = '';
 
     if (parentKey) {
-        var jiraBase = 'https://jira01.birentech.com/browse/';
+        var jiraBase = (APP_CONFIG.jiraBase || 'https://jira.example.com') + '/browse/';
         bcParent.innerHTML = (parentKey ? '<a href="' + jiraBase + parentKey + '" target="_blank" style="color:#1a73e8; text-decoration:none; border-bottom:1px dashed #1a73e8;">' + parentKey + '</a> ' : '') + (parentSummary || '').replace(/</g, '&lt;');
         bcParent.style.display = '';
         bcBackParent.style.display = '';
@@ -665,7 +682,7 @@ function renderLinkedPlans(plans) {
         var count = planCounts[lp.key] || 0;
         html += '<div style="display:flex; align-items:center; gap:8px; padding:6px 0; border-bottom:1px solid #eee; ' + indent + '">';
         html += '<span style="font-size:12px; color:#999;">' + prefix + '</span>';
-        html += '<a href="https://jira01.birentech.com/browse/' + lp.key + '" target="_blank" style="font-weight:600; color:#3498db; text-decoration:none;">' + lp.key + '</a>';
+        html += '<a href="' + browseHref(lp.key) + '" target="_blank" style="font-weight:600; color:#3498db; text-decoration:none;">' + lp.key + '</a>';
         html += '<span class="pc-type ' + typeClass + '" style="font-size:10px;">' + lp.issuetype + '</span>';
         html += '<span style="font-size:13px; color:#333; flex:1;">' + escapeHtml(lp.summary) + '</span>';
         html += '<span style="font-size:12px; color:#27ae60; font-weight:600;">' + count + ' cases</span>';
@@ -1985,7 +2002,7 @@ function showUploadBreadcrumb(key, summary, status) {
     bcProject.style.display = 'inline';
     bcSep.style.display = 'inline';
     bcParent.style.display = 'inline';
-    var jiraBase = 'https://jira01.birentech.com/browse/';
+    var jiraBase = (APP_CONFIG.jiraBase || 'https://jira.example.com') + '/browse/';
     bcParent.innerHTML = (key ? '<a href="' + jiraBase + key + '" target="_blank" style="color:#1a73e8; text-decoration:none; border-bottom:1px dashed #1a73e8;">' + key + '</a> ' : '') + (summary || '').replace(/</g, '&lt;');
     bcBackParent.style.display = 'inline';
     bcBackProject.style.display = 'inline';
@@ -2152,7 +2169,7 @@ function renderUploadExistingTable(cases) {
         
         // Key
         var tdKey = document.createElement('td');
-        tdKey.innerHTML = '<a href="' + (issue.url || 'https://jira01.birentech.com/browse/' + issue.key) + '" target="_blank" style="color:#3498db; text-decoration:none; font-weight:600;">' + issue.key + '</a>';
+        tdKey.innerHTML = '<a href="' + (issue.url || browseHref(issue.key)) + '" target="_blank" style="color:#3498db; text-decoration:none; font-weight:600;">' + issue.key + '</a>';
         tr.appendChild(tdKey);
         
         // Summary
@@ -2413,7 +2430,7 @@ function matchJiraUser(name) {
             resolve(name);
             return;
         }
-        var project = document.getElementById('tc-project').value || 'BR200';
+        var project = document.getElementById('tc-project').value || (APP_CONFIG.tcProject || '');
         fetch('/api/testcase/search?project=' + project + '&maxResults=100', {
             credentials: 'same-origin',
             headers: authToken ? { 'Authorization': 'Bearer ' + authToken } : {}
@@ -2538,7 +2555,7 @@ function generateWithAI() {
                 }
             });
             // Post-process: match assignees to JIRA users and normalize components
-            var project = document.getElementById('tc-project').value || 'BR200';
+            var project = document.getElementById('tc-project').value || (APP_CONFIG.tcProject || '');
             var matchPromises = aiGeneratedIssues.map(function(action) {
                 // Normalize components: array -> string
                 if (Array.isArray(action.components)) {
@@ -3147,7 +3164,7 @@ function generateAndUploadDescription(tasks, planSummary, planKey) {
         if (hasCategorization) {
             var currentKeys = {};
             tasks.forEach(function(t) { currentKeys[t.key] = true; });
-            var catIdRegex = /\|?(BR200-\d+)/g;
+            var catIdRegex = /\b[A-Z0-9]{2,10}-\d+\b/g;
             var catMatch;
             var catIds = {};
             while ((catMatch = catIdRegex.exec(existingCatPart)) !== null) {
@@ -3452,7 +3469,7 @@ function confirmCreateSubTestPlan() {
     _dialogComponent = component;
     
     // Search JIRA for user match
-    var project = document.getElementById('tc-project').value || 'BR200';
+    var project = document.getElementById('tc-project').value || (APP_CONFIG.tcProject || '');
     fetch('/api/testcase/search-user?name=' + encodeURIComponent(assignee), {
         credentials: 'same-origin',
         headers: authToken ? { 'Authorization': 'Bearer ' + authToken } : {}
@@ -3498,7 +3515,7 @@ function confirmCreateTestCases() {
     
     console.log('[DEBUG] confirmCreateTestCases: assignee=' + assignee + ', component=' + component + ', cmd=' + cmd);
     // Search JIRA for user match
-    var project = document.getElementById('tc-project').value || 'BR200';
+    var project = document.getElementById('tc-project').value || (APP_CONFIG.tcProject || '');
     fetch('/api/testcase/search-user?name=' + encodeURIComponent(assignee), {
         credentials: 'same-origin',
         headers: authToken ? { 'Authorization': 'Bearer ' + authToken } : {}
@@ -3535,14 +3552,14 @@ function searchJiraUser(name, callback) {
         callback(name);
         return;
     }
-    fetch('/api/testcase/search?project=' + (document.getElementById('tc-project').value || 'BR200') + '&query=' + encodeURIComponent(name) + '&maxResults=1', {
+    fetch('/api/testcase/search?project=' + (document.getElementById('tc-project').value || (APP_CONFIG.tcProject || '')) + '&query=' + encodeURIComponent(name) + '&maxResults=1', {
         credentials: 'same-origin',
         headers: authToken ? { 'Authorization': 'Bearer ' + authToken } : {}
     })
     .then(function(r) { return r.json(); })
     .then(function(data) {
         // Search for user via a simple approach - use the search endpoint with assignee filter
-        return fetch('/api/testcase/search?project=' + (document.getElementById('tc-project').value || 'BR200') + '&maxResults=1', {
+        return fetch('/api/testcase/search?project=' + (document.getElementById('tc-project').value || (APP_CONFIG.tcProject || '')) + '&maxResults=1', {
             credentials: 'same-origin',
             headers: authToken ? { 'Authorization': 'Bearer ' + authToken } : {}
         });
