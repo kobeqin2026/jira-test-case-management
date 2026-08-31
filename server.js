@@ -35,6 +35,9 @@ app.use(cookieParser());
 app.use(express.static(path.join(__dirname, 'public')));
 
 // Rate limiting
+// 2026-08-27: nginx 代理带 X-Forwarded-For, express-rate-limit v7 默认校验在 trust proxy=false 时抛
+// ERR_ERL_UNEXPECTED_X_FORWARDED_FOR (日志刷屏/潜在 500) —— 声明信任第一跳代理
+app.set('trust proxy', 1);
 var generalLimiter = rateLimit({
     windowMs: 60 * 1000,   // 1 minute
     max: 120,               // 120 requests per minute per IP

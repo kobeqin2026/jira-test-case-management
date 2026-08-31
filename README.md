@@ -195,6 +195,37 @@ jira-testcase-manager/
 
 ## 版本历史
 
+### v1.0.0 (2026-08-31) — 统一四平台版本管理
+
+**版本说明**：与 kpi-portal / gpu-tracker / hardware-reservation-platform 统一为 **v1.0.0** 版本管理（`package.json` 版本即 1.0.0；此前功能版本 v1.2.0 ~ v1.6.1 见下方历史）。
+
+**只读用户隐藏「批量上传」tab**
+- 非 admin（普通用户 / 只读账号）登录后隐藏「📤 批量上传」tab —— 批量写入 JIRA 的操作仅管理员可见可操作。
+
+### v1.6.1 (2026-08-27)
+基于 v1.6.0 新增以下改动：
+
+**统一用户登录（Hardware 平台账号回退）**
+- 本地账号校验失败时自动回退校验 Hardware 平台用户库（127.0.0.1:3002 /api/users/login）
+- 支持 Hardware 统一账号：admin 管理员 / Domain Owner（board、firmware、diag、pcie 等）直接登录
+- Hardware 账号不在本地 users.json：JIRA PAT / JIRA 用户名设置写入会话（GET/PUT /api/auth/profile 兼容），无需在本地建号
+
+**reporter 字段守卫修复（核心）**
+- 修复 Hardware 统一账号（会话无 jiraName）创建 JIRA Issue 报 400 "The reporter specified is not a user."
+- 根因：创建端点原先用 `req.user.jiraName || req.user.username` 作为 reporter，Hardware 账号会把应用登录名（如 kobe/board）发给 JIRA，而 JIRA 用户名均为 E 工号
+- 新增 `resolveReporterName()`：会话 jiraName 为 E 工号直接使用；否则用有效 PAT（个人或全局）调 `/rest/api/2/myself` 取 PAT owner（必为真实 JIRA 用户）；解析失败则省略 reporter 字段（JIRA 自动落到 PAT owner）
+- 应用于 `POST /api/testcase/create`、`POST /api/testcase/batch-create`、`POST /api/testcase/testplan` 三处创建端点，批量创建仅解析一次
+
+**批量上传交互增强**
+- 统一 API 失败提示：401 显示「登录已失效，请刷新重新登录」引导；其他错误展示服务端错误原文
+- 新建 Test Plan 支持显式指定 issuetype（Test Plan / Epic / Task 白名单校验），兼容 BR288Y 计划树
+- 已有用例区无直属用例时展示整棵子树用例（含子测试计划下用例）并标注来源
+- 批量上传面包屑区新增「➕ 新建 Test Plan」快捷入口
+- 前端版本 v87
+
+**Nginx 反向代理兼容**
+- `app.set('trust proxy', 1)`：修复 express-rate-limit v7 在 nginx `X-Forwarded-For` 头下抛 `ERR_ERL_UNEXPECTED_X_FORWARDED_FOR`（日志刷屏 / 潜在 500）
+
 ### v1.6.0 (2026-07-13)
 基于 v1.5.3 新增以下修复：
 

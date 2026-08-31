@@ -16,6 +16,34 @@ var hashPassword = users.hashPassword;
 var verifyPassword = users.verifyPassword;
 var logOperation = logger.logOperation;
 
+// 统一登录: 校验 Hardware 平台用户库 (admin / domain owner). 成功返回 {role, display_name}, 失败返回 null
+function tryHardwareLogin(name, password) {
+    return new Promise(function(resolve) {
+        var http = require('http');
+        var body = JSON.stringify({ name: name, password: password });
+        var req = http.request({
+            hostname: '127.0.0.1',
+            port: 3002,
+            path: '/api/users/login',
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
+        }, function(res) {
+            var buf = '';
+            res.setEncoding('utf8');
+            res.on('data', function(c) { buf += c; });
+            res.on('end', function() {
+                try {
+                    var j = JSON.parse(buf);
+                    resolve(j && j.user ? j.user : null);
+                } catch (e) { resolve(null); }
+            });
+        });
+        req.setTimeout(5000, function() { req.destroy(); resolve(null); });
+        req.on('error', function() { resolve(null); });
+        req.end(body);
+    });
+}
+
 // POST /api/auth/login
 router.post('/login', async function(req, res) {
     try {
@@ -28,13 +56,26 @@ router.post('/login', async function(req, res) {
         
         var allUsers = await loadUsers();
         var user = allUsers.find(function(u) { return u.username === username; });
-        
-        if (!user || !(await verifyPassword(password, user.password))) {
+        var localOk = !!(user && (await verifyPassword(password, user.password)));
+        var hwUser = null;
+        if (!localOk) {
+            // 统一登录: 回退 Hardware 平台用户库 (admin / domain owner)
+            hwUser = await tryHardwareLogin(username, password);
+        }
+        if (!localOk && !hwUser) {
             logOperation(username, 'LOGIN_FAILED', 'users', { reason: 'invalid-credentials' });
             return res.status(401).json({ success: false, message: '用户名或密码错误' });
         }
+        if (hwUser) {
+            user = {
+                username: username,
+                password: '$2hardware$',
+                role: hwUser.role === 'admin' ? 'admin' : 'domain_owner',
+                name: hwUser.display_name || username
+            };
+        }
         
-        // Security fix C1: auto-upgrade legacy plaintext passwords to bcrypt
+        // Security fix C1: auto-upgrade legacy plaintext passwords to bcrypt (仅本地用户)
         if (!user.password.startsWith('$2')) {
             var allUsers = await loadUsers();
             var upgradeIdx = allUsers.findIndex(function(u) { return u.username === username; });
@@ -196,7 +237,24 @@ router.put('/profile', auth.authenticateToken, async function(req, res) {
         var allUsers = await loadUsers();
         var userIdx = allUsers.findIndex(function(u) { return u.username === req.user.username; });
         if (userIdx === -1) {
-            return res.status(404).json({ success: false, message: '用户不存在' });
+            // Hardware 统一账号 (admin / domain owner): 不在本地 users.json, 只更新会话设置
+            if (body.jiraPat !== undefined && req.user) req.user.jiraPat = body.jiraPat;
+            if (body.jiraName !== undefined && req.user) req.user.jiraName = body.jiraName;
+            var sessionStore = require('../lib/sessions');
+            var sessMap = sessionStore.getSessions();
+            if (sessMap[req.user.username]) {
+                if (body.jiraPat !== undefined) sessMap[req.user.username].jiraPat = body.jiraPat;
+                if (body.jiraName !== undefined) sessMap[req.user.username].jiraName = body.jiraName;
+            }
+            await sessionStore.saveSessions();
+            logOperation(req.user.username, 'UPDATE_PROFILE', 'users', { fields: Object.keys(body), target: 'hardware-session' });
+            return res.json({
+                success: true,
+                data: {
+                    jiraPat: req.user.jiraPat ? '***已设置***' : '',
+                    jiraName: req.user.jiraName || ''
+                }
+            });
         }
 
         // Update jiraPat and jiraName
@@ -235,7 +293,14 @@ router.get('/profile', auth.authenticateToken, async function(req, res) {
         var allUsers = await loadUsers();
         var user = allUsers.find(function(u) { return u.username === req.user.username; });
         if (!user) {
-            return res.status(404).json({ success: false, message: '用户不存在' });
+            // Hardware 统一账号 (admin / domain owner): 不在本地 users.json, 返回会话中的设置
+            return res.json({
+                success: true,
+                data: {
+                    jiraPat: req.user.jiraPat ? '***已设置***' : '',
+                    jiraName: req.user.jiraName || ''
+                }
+            });
         }
 
         res.json({

@@ -257,6 +257,7 @@
     <div class="login-overlay" id="login-overlay">
         <div class="login-box">
             <h2>🔐 登录</h2>
+            <p style="font-size:12px; color:#888; margin:-8px 0 12px;">支持 Hardware 统一账号：admin 管理员 / Domain Owner（如 board、firmware、diag 等）</p>
             <input type="text" id="login-user" placeholder="用户名" autocomplete="username" />
             <input type="password" id="login-pass" placeholder="密码" autocomplete="current-password" />
             <button onclick="doLogin()">登录</button>
@@ -280,7 +281,7 @@
     <!-- Tab Navigation -->
     <div class="tab-nav">
         <button class="tab-btn active" onclick="switchTab('browse')">📋 Test Case 库</button>
-        <button class="tab-btn" onclick="switchTab('upload')">📤 批量上传</button>
+        <button class="tab-btn" id="tab-btn-upload" onclick="switchTab('upload')">📤 批量上传</button>
     </div>
 
     <div class="container">
@@ -557,6 +558,7 @@
                     <h3 style="justify-content:space-between;">
                         <span>📋 已有 Test Cases <span class="badge" id="upload-existing-count"></span></span>
                         <span style="display:flex; align-items:center; gap:10px;">
+                            <button class="btn btn-outline btn-sm" onclick="uploadCreateNewPlan()">➕ 新建 Test Plan</button>
                             <button class="btn btn-primary btn-sm" onclick="showUploadContentSection()" id="btn-add-new-tc">➕ 添加新 Test Case</button>
                         </span>
                     </h3>
@@ -777,6 +779,6 @@
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
-    <script src="/js/testcase-upload.js?v=85"></script>
+    <script src="/js/testcase-upload.js?v=87"></script>
 </body>
 </html>

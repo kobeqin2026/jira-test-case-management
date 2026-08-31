@@ -213,16 +213,20 @@ function updateHeaderUI() {
         nameEl.textContent = currentUserName;
         infoEl.style.display = 'inline';
     }
+    var uploadTabBtn = document.getElementById('tab-btn-upload');
     if (currentUserRole === 'admin') {
         roleEl.textContent = '管理员';
         roleEl.style.background = '#fef3e0';
         roleEl.style.color = '#e65100';
         adminBtn.style.display = 'inline-flex';
+        if (uploadTabBtn) uploadTabBtn.style.display = '';
     } else {
         roleEl.textContent = '用户';
         roleEl.style.background = '#e8f5e9';
         roleEl.style.color = '#27ae60';
         adminBtn.style.display = 'none';
+        // 只读用户: 隐藏"批量上传"tab (写入 JIRA 的操作仅管理员可见)
+        if (uploadTabBtn) uploadTabBtn.style.display = 'none';
     }
     profileBtn.style.display = 'inline-flex';
     logoutEl.style.display = 'inline-block';
@@ -512,12 +516,17 @@ function loadParents() {
         credentials: 'same-origin',
         headers: authToken ? { 'Authorization': 'Bearer ' + authToken } : {}
     })
-    .then(function(r) { return r.json(); })
-    .then(function(data) {
+    .then(function(r) {
+        return r.json().then(function(j) { return { status: r.status, json: j }; });
+    })
+    .then(function(res) {
+        var data = res.json;
         if (data.success && data.data) {
             allParents = data.data.issues || [];
             document.getElementById('parent-count').textContent = allParents.length + ' 个';
             renderParentGrid(allParents);
+        } else {
+            document.getElementById('parent-grid').innerHTML = renderApiError(res.status, data);
         }
     })
     .catch(function(e) {
@@ -1788,6 +1797,15 @@ function escapeHtml(text) {
     return div.innerHTML;
 }
 
+// 统一 API 失败提示: 401=会话已失效(同账号重复登录/重启等会顶掉旧 token), 引导重新登录; 其他显示服务端错误原文
+function renderApiError(status, data) {
+    if (status === 401) {
+        return '<div class="empty-state"><p>🔒 登录已失效，请 <a href="#" onclick="event.preventDefault();location.reload();return false;">刷新页面重新登录</a></p></div>';
+    }
+    var msg = (data && (data.message || data.error)) ? (data.message || data.error) : '加载失败';
+    return '<div class="empty-state"><p>加载失败: ' + escapeHtml(String(msg)) + '</p></div>';
+}
+
 function getStatusBadge(status) {
     if (!status) return '<span class="badge-status badge-default">未知</span>';
     var ns = normalizeStatus(status);
@@ -1854,10 +1872,13 @@ function loadUploadParents() {
         credentials: 'same-origin',
         headers: authToken ? { 'Authorization': 'Bearer ' + authToken } : {}
     })
-    .then(function(r) { return r.json(); })
-    .then(function(data) {
+    .then(function(r) {
+        return r.json().then(function(j) { return { status: r.status, json: j }; });
+    })
+    .then(function(res) {
+        var data = res.json;
         if (!data.success || !data.data || !data.data.issues) {
-            grid.innerHTML = '<div style="color:#999; padding:20px; text-align:center;">加载失败</div>';
+            grid.innerHTML = renderApiError(res.status, data);
             return;
         }
         var issues = data.data.issues;
@@ -2011,6 +2032,12 @@ function toggleCreatePlan() {
     form.style.display = form.style.display === 'none' ? 'block' : 'none';
 }
 
+// 选中 Test Plan 后从面包屑区发起新建: 回到计划列表并展开新建表单
+function uploadCreateNewPlan() {
+    uploadBackToParentList();
+    toggleCreatePlan();
+}
+
 function createTestPlan() {
     var project = document.getElementById('tc-project').value;
     var name = document.getElementById('new-plan-name').value.trim();
@@ -2024,7 +2051,7 @@ function createTestPlan() {
             ...(authToken ? { 'Authorization': 'Bearer ' + authToken } : {})
         },
         credentials: 'same-origin',
-        body: JSON.stringify({ project: project, summary: name, description: desc })
+        body: JSON.stringify({ project: project, summary: name, description: desc, issuetype: 'Test Plan' })
     })
     .then(function(r) { return r.json(); })
     .then(function(data) {
@@ -2071,15 +2098,16 @@ function loadUploadExistingCases(planKey) {
         
         var allTasks = data.data.tasks || [];
         var directTasks = data.data.directTasks || [];
-        // Use direct tasks (only direct sub-tasks of this plan)
-        uploadExistingCases = directTasks.length > 0 ? directTasks : allTasks.filter(function(t) { return t.parent === planKey; });
+        // 有直属用例按直属显示; 顶层计划/无直属用例时显示整棵子树用例 (linked-tasks 返回的 tasks 即本计划子树全量)
+        uploadExistingCases = directTasks.length > 0 ? directTasks : allTasks;
+        var fromSubPlans = uploadExistingCases.length > 0 && directTasks.length === 0;
         
         countEl.textContent = uploadExistingCases.length + ' 条';
         if (uploadExistingCases.length === 0) {
             statusEl.textContent = '该 Test Plan 下暂无 Test Case，点击上方按钮添加';
             statusEl.style.color = '#999';
         } else {
-            statusEl.textContent = '共 ' + uploadExistingCases.length + ' 条已有 Test Case，可查看或删除后再添加新的';
+            statusEl.textContent = '共 ' + uploadExistingCases.length + ' 条已有 Test Case' + (fromSubPlans ? '（含子测试计划下的用例）' : '') + '，可查看或删除后再添加新的';
             statusEl.style.color = '#666';
         }
         renderUploadExistingTable(uploadExistingCases);

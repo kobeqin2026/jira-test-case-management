@@ -117,6 +117,23 @@ function jiraRequest(method, apiPath, body, userPat) {
 }
 
 /**
+ * 解析创建 issue 时 reporter 字段的 JIRA 有效 username。
+ * jira01 实例 JIRA 用户名均为 E 工号(E\d+); 传显示名/应用登录名(如 Kobe Qin / kobe)
+ * 会 400 "The reporter specified is not a user."。
+ * 解析顺序:
+ * 1. session 已配置 E 工号 jiraName → 直接用
+ * 2. 用有效 PAT(个人或全局)调 /myself → 取 PAT owner(一定是真实 JIRA 用户)
+ * 3. 失败 → 返回 ''(调用方不设 reporter, JIRA 自动落到 PAT owner)
+ */
+function resolveReporterName(userJiraName, userPat) {
+    var name = (userJiraName || '').trim();
+    if (/^E\d+$/i.test(name)) return Promise.resolve(name);
+    return jiraRequest('GET', '/rest/api/2/myself', null, userPat)
+        .then(function(me) { return me && me.name ? me.name : ''; })
+        .catch(function() { return ''; });
+}
+
+/**
  * POST /api/testcase/create
  * Create a single JIRA issue
  * Body: { project, issuetype, summary, description, priority, labels, assignee, parentKey }
@@ -136,6 +153,8 @@ router.post('/create', auth.authenticateToken, async function(req, res) {
         var userPat = req.user.jiraPat || '';
         var userJiraName = req.user.jiraName || req.user.username;
         var issueTypeName = (body.issuetype === 'Sub-test plan' ? 'Test Plan' : body.issuetype) || 'Task';
+        // reporter 必须为 JIRA 有效 E 工号; jiraName 缺失/非 E 工号时经 /myself 解析到 PAT owner
+        var reporterName = await resolveReporterName(userJiraName, userPat);
 
         var issueBody = {
             fields: {
@@ -146,8 +165,8 @@ router.post('/create', auth.authenticateToken, async function(req, res) {
         };
 
         // Set reporter for non-Sub-task types (Sub-task screen doesn't support reporter field)
-        if (issueTypeName !== 'Sub-task' && userJiraName) {
-            issueBody.fields.reporter = { name: userJiraName };
+        if (issueTypeName !== 'Sub-task' && reporterName) {
+            issueBody.fields.reporter = { name: reporterName };
         }
 
         if (body.description) {
@@ -249,6 +268,8 @@ router.post('/batch-create', auth.authenticateToken, async function(req, res) {
 
         var userPat = req.user.jiraPat || '';
         var userJiraName = req.user.jiraName || req.user.username;
+        // reporter 必须为 JIRA 有效 E 工号; 整个批量只解析一次
+        var reporterName = await resolveReporterName(userJiraName, userPat);
         var results = [];
         var errors = [];
         var createdKeys = [];
@@ -267,8 +288,8 @@ router.post('/batch-create', auth.authenticateToken, async function(req, res) {
                 };
 
                 // Set reporter for non-Sub-task types (Sub-task screen doesn't support reporter field)
-                if (batchIssueTypeName !== 'Sub-task' && userJiraName) {
-                    issueBody.fields.reporter = { name: userJiraName };
+                if (batchIssueTypeName !== 'Sub-task' && reporterName) {
+                    issueBody.fields.reporter = { name: reporterName };
                 }
 
                 if (issue.description) {
@@ -769,15 +790,27 @@ router.post('/testplan', auth.authenticateToken, async function(req, res) {
 
         var userPat = req.user.jiraPat || '';
         var userJiraName = req.user.jiraName || req.user.username;
+        // reporter 必须为 JIRA 有效 E 工号; jiraName 缺失/非 E 工号时经 /myself 解析到 PAT owner
+        var reporterName = await resolveReporterName(userJiraName, userPat);
+
+        // issue type 白名单: 前端批量上传新建 Test Plan 传 'Test Plan' (BR200/BR288Y 计划树为 Test Plan 类型);
+        // 默认 'Epic' 兼容旧调用。防注入: 仅接受精确白名单
+        var issueType = 'Epic';
+        if (body.issuetype) {
+            var t = String(body.issuetype).trim();
+            if (['Epic', 'Test Plan', 'Task'].indexOf(t) !== -1) issueType = t;
+        }
 
         var issueBody = {
             fields: {
                 project: { key: projectKey },
-                issuetype: { name: 'Epic' },
-                summary: body.summary,
-                reporter: { name: userJiraName }
+                issuetype: { name: issueType },
+                summary: body.summary
             }
         };
+        if (reporterName) {
+            issueBody.fields.reporter = { name: reporterName };
+        }
 
         if (body.description) {
             issueBody.fields.description = body.description;
