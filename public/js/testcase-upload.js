@@ -110,6 +110,24 @@ var uploadResults = [];
 var currentPlans = [];
 var selectedPlanKey = '';
 
+// ============ 门户 8090 免登录跳转 (SSO): URL ?token= ============
+// 门户登录后拿 jira-testcase 会话 token 走 URL 透传 (跨端口 cookie 不共享)。
+// 读到即存入 localStorage (与 doLogin 一致), 使 checkAuth() 能凭它通过 /api/auth/verify。
+(function(){
+  try {
+    var sp = new URLSearchParams(location.search);
+    var tk = sp.get('token') || '';
+    if (tk) {
+      authToken = tk;
+      localStorage.setItem('testcaseAuthToken', tk);
+      // 从地址栏剔除 token, 避免泄露/误复制 (保留其它参数)
+      var u = new URL(location.href);
+      u.searchParams.delete('token');
+      history.replaceState(null, '', u.pathname + (u.search ? u.search : '') + (u.hash || ''));
+    }
+  } catch (e) {}
+})();
+
 // ============ Auth ============
 
 function checkAuth() {
@@ -474,16 +492,19 @@ function showBreadcrumb(project, parentKey, parentSummary, parentStatus) {
     var bcStatus = document.getElementById('bc-status');
     var bcBackParent = document.getElementById('bc-back-parent');
     var bcBackProject = document.getElementById('bc-back-project');
+    var bcRefresh = document.getElementById('btn-refresh-status');
 
     bar.style.display = '';
     document.getElementById('project-section').style.display = 'none';
     bcBackProject.style.display = '';
+    bcRefresh.style.display = 'none';
 
     if (parentKey) {
         var jiraBase = (APP_CONFIG.jiraBase || 'https://jira.example.com') + '/browse/';
         bcParent.innerHTML = (parentKey ? '<a href="' + jiraBase + parentKey + '" target="_blank" style="color:#1a73e8; text-decoration:none; border-bottom:1px dashed #1a73e8;">' + parentKey + '</a> ' : '') + (parentSummary || '').replace(/</g, '&lt;');
         bcParent.style.display = '';
         bcBackParent.style.display = '';
+        bcRefresh.style.display = '';
 
         // Show status badge
         var st = (parentStatus || '').toLowerCase();
@@ -529,7 +550,7 @@ function loadParents() {
     .catch(function() {});
 
     // Fetch both Task and Test Plan
-    fetch('/api/testcase/search?project=' + encodeURIComponent(project) + '&issuetype=Task,Test+Plan&maxResults=100', {
+    fetch('/api/testcase/search?project=' + encodeURIComponent(project) + '&issuetype=Task,Test+Plan&maxResults=500', {
         credentials: 'same-origin',
         headers: authToken ? { 'Authorization': 'Bearer ' + authToken } : {}
     })
@@ -614,7 +635,13 @@ function selectParent(key) {
     document.getElementById('dist-row').innerHTML = '';
     linkedPlans = [];
 
-    // Use linked-tasks endpoint (supports 3-level recursion)
+    loadParentDetail(key);
+}
+
+// ============ Load Parent Detail (fetch + render) ============
+
+function loadParentDetail(key) {
+    // Use linked-tasks endpoint (supports 3-level recursion) — re-fetches fresh statuses from JIRA
     fetch('/api/testcase/testplan/linked-tasks/' + key, {
         credentials: 'same-origin',
         headers: authToken ? { 'Authorization': 'Bearer ' + authToken } : {}
@@ -635,6 +662,18 @@ function selectParent(key) {
     .catch(function(e) {
         document.getElementById('detail-section').innerHTML = '<div class="empty-state"><p>加载失败: ' + e.message + '</p></div>';
     });
+}
+
+// ============ Refresh Test Case Statuses ============
+
+function refreshTestCases() {
+    if (!selectedParent) return;
+    // Clear current view to show loading state, then re-fetch fresh statuses
+    document.getElementById('detail-thead').innerHTML = '<tr><th>刷新中...</th></tr>';
+    document.getElementById('detail-tbody').innerHTML = '';
+    document.getElementById('kpi-total').textContent = '...';
+    document.getElementById('dist-row').innerHTML = '';
+    loadParentDetail(selectedParent.key);
 }
 
 function renderLinkedPlans(plans) {
@@ -1885,7 +1924,7 @@ function loadUploadParents() {
     var grid = document.getElementById('upload-parent-grid');
     grid.innerHTML = '<div class="loading">加载中...</div>';
 
-    fetch('/api/testcase/search?project=' + encodeURIComponent(project) + '&issuetype=Task,Test+Plan&maxResults=100', {
+    fetch('/api/testcase/search?project=' + encodeURIComponent(project) + '&issuetype=Task,Test+Plan&maxResults=500', {
         credentials: 'same-origin',
         headers: authToken ? { 'Authorization': 'Bearer ' + authToken } : {}
     })

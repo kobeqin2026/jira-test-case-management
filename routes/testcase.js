@@ -496,7 +496,7 @@ router.get('/search', auth.authenticateToken, async function(req, res) {
         var userPat = req.user.jiraPat || '';
 
         var startAt = parseInt(req.query.startAt) || 0;
-        var maxResults = Math.min(parseInt(req.query.maxResults) || 20, 100);
+        var maxResults = Math.min(parseInt(req.query.maxResults) || 20, 500);
         var searchText = req.query.query || '';
         var issueType = req.query.issuetype || '';
         var status = req.query.status || '';
