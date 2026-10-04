@@ -189,6 +189,13 @@ jira-testcase-manager/
 
 ## 版本历史
 
+### v1.6.2 (2026-10-04)
+**父列表 /search 窗口上限修复**
+
+- `/api/testcase/search` 父列表 `maxResults` 上限由 100 提升到 500：BR288Y 项目有 102 条 Test Plan/Task，`BR288Y-1` 是**最早创建**(created DESC 排第 102)被原窗口截出列表
+- `#parent-search` 是客户端过滤（只在已加载的 `allParents` 里筛），窗口外的 plan 无论怎么搜都找不到 —— 提高后端上限 + 前端 browse/upload 两处父列表查询到 500
+- 前端版本 v91
+
 ### v1.6.1 (2026-08-27)
 基于 v1.6.0 新增以下改动：
 
