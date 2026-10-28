@@ -118,7 +118,7 @@ function jiraRequest(method, apiPath, body, userPat) {
 
 /**
  * 解析创建 issue 时 reporter 字段的 JIRA 有效 username。
- * JIRA 实例用户名为 E 工号(E\d+); 传显示名/应用登录名(如 Kobe Qin / kobe)
+ * JIRA 实例用户名为工号格式(如 E12345); 传显示名/应用登录名(如 Zhang San / zhang)
  * 会 400 "The reporter specified is not a user."。
  * 解析顺序:
  * 1. session 已配置 E 工号 jiraName → 直接用

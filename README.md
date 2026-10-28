@@ -192,7 +192,7 @@ jira-testcase-manager/
 ### v1.6.2 (2026-10-04)
 **父列表 /search 窗口上限修复**
 
-- `/api/testcase/search` 父列表 `maxResults` 上限由 100 提升到 500：BR288Y 项目有 102 条 Test Plan/Task，`BR288Y-1` 是**最早创建**(created DESC 排第 102)被原窗口截出列表
+- `/api/testcase/search` 父列表 `maxResults` 上限由 100 提升到 500：当前接入的项目有 102 条 Test Plan/Task，最早创建的根计划（created DESC 排第 102）被原窗口截出列表
 - `#parent-search` 是客户端过滤（只在已加载的 `allParents` 里筛），窗口外的 plan 无论怎么搜都找不到 —— 提高后端上限 + 前端 browse/upload 两处父列表查询到 500
 - 前端版本 v91
 
@@ -206,7 +206,7 @@ jira-testcase-manager/
 
 **reporter 字段守卫修复（核心）**
 - 修复 Hardware 统一账号（会话无 jiraName）创建 JIRA Issue 报 400 "The reporter specified is not a user."
-- 根因：创建端点原先用 `req.user.jiraName || req.user.username` 作为 reporter，Hardware 账号会把应用登录名（如 kobe/board）发给 JIRA，而 JIRA 用户名均为 E 工号
+- 根因：创建端点原先用 `req.user.jiraName || req.user.username` 作为 reporter，Hardware 账号会把应用登录名（如 user/board）发给 JIRA，而 JIRA 用户名均为工号格式
 - 新增 `resolveReporterName()`：会话 jiraName 为 E 工号直接使用；否则用有效 PAT（个人或全局）调 `/rest/api/2/myself` 取 PAT owner（必为真实 JIRA 用户）；解析失败则省略 reporter 字段（JIRA 自动落到 PAT owner）
 - 应用于 `POST /api/testcase/create`、`POST /api/testcase/batch-create`、`POST /api/testcase/testplan` 三处创建端点，批量创建仅解析一次
 

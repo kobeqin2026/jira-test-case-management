@@ -855,89 +855,192 @@ function renderDistributions(issues) {
         var comps = i.components || [];
         var keys = comps.length > 0 ? comps : ['未分配'];
         keys.forEach(function(c) {
-            if (!compData[c]) compData[c] = { total: 0, done: 0 };
+            if (!compData[c]) compData[c] = { total: 0, done: 0, waived: 0 };
             compData[c].total++;
             var ns = normalizeStatus(i.status);
             if (ns === 'done' || ns === 'closed' || ns === 'validated') compData[c].done++;
+            else if (ns === 'waived') compData[c].waived++;
         });
     });
     var compSorted = Object.keys(compData).sort(function(a, b) { return compData[b].total - compData[a].total; });
     var compLabels = compSorted;
     var compTotalData = compSorted.map(function(c) { return compData[c].total; });
     var compDoneData = compSorted.map(function(c) { return compData[c].done; });
+    var compWaivedData = compSorted.map(function(c) { return compData[c].waived; });
     var compCanvasId = 'comp-chart-' + (_pieChartCounter++);
-    _pendingCompCharts = [{ canvasId: compCanvasId, labels: compLabels, totalData: compTotalData, doneData: compDoneData }];
+    _pendingCompCharts = [{ canvasId: compCanvasId, labels: compLabels, totalData: compTotalData, doneData: compDoneData, waivedData: compWaivedData }];
     html += '<div style="position:relative; height:260px;"><canvas id="' + compCanvasId + '"></canvas></div>';
     html += '</div>';
 
     document.getElementById('dist-row').innerHTML = html;
 
-    // Daily execution trend: track how many test cases were set to Validated each day
-    // Only show dates within the execution period (Actual Start Date to Actual End Date)
-    var execStart = selectedParent ? (selectedParent.actualStartDate || '').substring(0, 10) : '';
-    var execEnd = selectedParent ? (selectedParent.actualEndDate || '').substring(0, 10) : '';
-    
+    // Daily execution trend with time filter (selectable date range)
+    _trendExecStart = selectedParent ? (selectedParent.actualStartDate || '').substring(0, 10) : '';
+    _trendExecEnd = selectedParent ? (selectedParent.actualEndDate || '').substring(0, 10) : '';
+    renderDailyTrend(issues, true);
+}
+
+// ============ Daily Execution Trend (with time filter) ============
+var _trendIssues = [];
+var _trendExecStart = '';
+var _trendExecEnd = '';
+var _trendChartInstance = null;
+
+// Format a Date to local YYYY-MM-DD (avoids UTC toISOString timezone shift)
+function _trendFmtDate(d) {
+    var y = d.getFullYear();
+    var m = ('0' + (d.getMonth() + 1)).slice(-2);
+    var day = ('0' + d.getDate()).slice(-2);
+    return y + '-' + m + '-' + day;
+}
+
+function renderDailyTrend(issues, reset) {
+    _trendIssues = issues || _trendIssues || [];
+    var ownerRow = document.getElementById('owner-row');
+    if (!ownerRow) return;
+
+    // Defaults: execution period, else derive min/max from issue dates
+    var defaultStart = _trendExecStart;
+    var defaultEnd = _trendExecEnd;
+    if (!defaultStart || !defaultEnd) {
+        var dateSet = [];
+        _trendIssues.forEach(function(i) {
+            var d = (i.updated || i.created || '');
+            if (d && d.substring) dateSet.push(d.substring(0, 10));
+        });
+        dateSet.sort();
+        if (dateSet.length) { defaultStart = dateSet[0]; defaultEnd = dateSet[dateSet.length - 1]; }
+    }
+
+    var inStart = document.getElementById('trend-start');
+    var inEnd = document.getElementById('trend-end');
+    var start, end;
+    if (reset) {
+        // New parent loaded: reset filter to the full execution period
+        start = defaultStart; end = defaultEnd;
+        if (inStart) inStart.value = start;
+        if (inEnd) inEnd.value = end;
+    } else {
+        start = (inStart && inStart.value) ? inStart.value : defaultStart;
+        end = (inEnd && inEnd.value) ? inEnd.value : defaultEnd;
+    }
+
+    // Sanitize: fall back to defaults / swap if reversed
+    if (!start || !end) { start = defaultStart; end = defaultEnd; }
+    if (start && end && start > end) { var tmp = start; start = end; end = tmp; }
+
+    // Count validated per day within [start, end]
     var validatedDaily = {};
     var totalValidated = 0;
-    issues.forEach(function(i) {
+    _trendIssues.forEach(function(i) {
         if (i.status === 'Validated') {
             var d = '';
-            if (i.updated) {
-                d = i.updated.substring(0, 10);
-            } else if (i.created) {
-                d = i.created.substring(0, 10);
-            }
-            // Only count if within execution period
-            if (d && (!execStart || d >= execStart) && (!execEnd || d <= execEnd)) {
+            if (i.updated) d = i.updated.substring(0, 10);
+            else if (i.created) d = i.created.substring(0, 10);
+            if (d && (!start || d >= start) && (!end || d <= end)) {
                 validatedDaily[d] = (validatedDaily[d] || 0) + 1;
                 totalValidated++;
             }
         }
     });
-    
-    // Generate all dates in execution period for complete x-axis
+
+    // Build complete x-axis over [start, end]
     var allDates = [];
-    if (execStart && execEnd) {
-        var current = new Date(execStart);
-        var end = new Date(execEnd);
-        while (current <= end) {
-            allDates.push(current.toISOString().substring(0, 10));
-            current.setDate(current.getDate() + 1);
+    if (start && end) {
+        var cur = new Date(start + 'T00:00:00');
+        var fin = new Date(end + 'T00:00:00');
+        var guard = 0;
+        while (cur <= fin && guard < 4000) {
+            allDates.push(_trendFmtDate(cur));
+            cur.setDate(cur.getDate() + 1);
+            guard++;
         }
-    } else {
-        allDates = Object.keys(validatedDaily).sort();
     }
-    
-    // Fill in dates with 0 if no data
-    allDates.forEach(function(d) {
-        if (!validatedDaily[d]) validatedDaily[d] = 0;
-    });
+    if (allDates.length === 0) allDates = Object.keys(validatedDaily).sort();
+    allDates.forEach(function(d) { if (!validatedDaily[d]) validatedDaily[d] = 0; });
     var sortedDates = allDates.sort();
-    
-    // Calculate progress
-    var totalIssues = issues.length;
+
+    var totalIssues = _trendIssues.length;
     var progressPercent = totalIssues > 0 ? Math.round((totalValidated / totalIssues) * 100) : 0;
-    
-    // If no data, show empty state
+
+    // Empty state
     if (sortedDates.length === 0) {
-        document.getElementById('owner-row').innerHTML = '<div class="chart-card chart-wide"><h3>📈 每日执行趋势</h3><p style="color:#999;text-align:center;">暂无已验证的测试用例</p></div>';
-    } else {
-        // Aggregate by date (count of test cases validated that day)
-        var trendCanvasId = 'trend-chart-' + (_pieChartCounter++);
-        var trendHtml = '<div class="chart-card chart-wide">';
-        trendHtml += '<h3>📈 每日执行趋势</h3>';
-        trendHtml += '<div style="margin-bottom:10px;font-size:13px;color:#666;">已验证: <span style="color:#27ae60;font-weight:bold;">' + totalValidated + '</span> / ' + totalIssues + ' (' + progressPercent + '%)</div>';
-        trendHtml += '<div style="position:relative; height:200px;"><canvas id="' + trendCanvasId + '"></canvas></div>';
-        trendHtml += '</div>';
-        document.getElementById('owner-row').innerHTML = trendHtml;
-        // Defer chart creation
-        _pendingCompCharts.push({
-            canvasId: trendCanvasId,
-            isTrend: true,
-            labels: sortedDates,
-            data: sortedDates.map(function(d) { return validatedDaily[d]; })
-        });
+        ownerRow.innerHTML = '<div class="chart-card chart-wide"><h3>📈 每日执行趋势</h3><p style="color:#999;text-align:center;">暂无已验证的测试用例</p></div>';
+        return;
     }
+
+    // Time filter controls
+    var trendHtml = '<div class="chart-card chart-wide">';
+    trendHtml += '<h3>📈 每日执行趋势</h3>';
+    trendHtml += '<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end;padding:8px 12px;background:#f8f9fa;border:1px solid #e0e0e0;border-radius:6px;margin-bottom:12px;font-size:12px;">';
+    trendHtml += '<span style="font-weight:600;color:#666;line-height:30px;">时间筛选:</span>';
+    trendHtml += '<button type="button" class="trend-preset btn btn-sm btn-outline" data-days="all">全部</button>';
+    trendHtml += '<button type="button" class="trend-preset btn btn-sm btn-outline" data-days="7">近7天</button>';
+    trendHtml += '<button type="button" class="trend-preset btn btn-sm btn-outline" data-days="14">近14天</button>';
+    trendHtml += '<button type="button" class="trend-preset btn btn-sm btn-outline" data-days="30">近30天</button>';
+    trendHtml += '<span style="display:inline-flex;align-items:center;gap:4px;margin-left:4px;color:#666;">从 <input type="date" id="trend-start" value="' + (start || '') + '" style="padding:6px 10px;border:1px solid #ddd;border-radius:4px;font-size:13px;"> 至 <input type="date" id="trend-end" value="' + (end || '') + '" style="padding:6px 10px;border:1px solid #ddd;border-radius:4px;font-size:13px;"></span>';
+    trendHtml += '</div>';
+    trendHtml += '<div style="margin-bottom:10px;font-size:13px;color:#666;">该时段已验证: <span style="color:#27ae60;font-weight:bold;">' + totalValidated + '</span> / ' + totalIssues + ' (' + progressPercent + '%)</div>';
+    var trendCanvasId = 'trend-chart-' + (_pieChartCounter++);
+    trendHtml += '<div style="position:relative; height:200px;"><canvas id="' + trendCanvasId + '"></canvas></div>';
+    trendHtml += '</div>';
+    ownerRow.innerHTML = trendHtml;
+
+    // Bind filter events
+    ownerRow.querySelectorAll('.trend-preset').forEach(function(btn) {
+        btn.addEventListener('click', function() { applyTrendPreset(this.getAttribute('data-days')); });
+    });
+    var si = document.getElementById('trend-start');
+    var ei = document.getElementById('trend-end');
+    if (si) si.addEventListener('change', function() { renderDailyTrend(); });
+    if (ei) ei.addEventListener('change', function() { renderDailyTrend(); });
+
+    // Draw chart (destroy previous instance to avoid duplicates)
+    if (_trendChartInstance) { _trendChartInstance.destroy(); _trendChartInstance = null; }
+    var canvasEl = document.getElementById(trendCanvasId);
+    if (!canvasEl) return;
+    var ctx = canvasEl.getContext('2d');
+    _trendChartInstance = new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels: sortedDates.map(function(d) { return d.substring(5); }), // MM-DD
+            datasets: [{
+                label: '执行数量',
+                data: sortedDates.map(function(d) { return validatedDaily[d]; }),
+                borderColor: '#3498db',
+                backgroundColor: 'rgba(52,152,219,0.15)',
+                fill: true,
+                tension: 0.3,
+                pointRadius: 4,
+                pointBackgroundColor: '#3498db'
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: { x: { grid: { display: false } }, y: { beginAtZero: true, ticks: { stepSize: 1 } } },
+            plugins: { legend: { display: false } }
+        }
+    });
+}
+
+function applyTrendPreset(days) {
+    var end = _trendExecEnd || _trendFmtDate(new Date());
+    var start;
+    if (days === 'all') {
+        start = _trendExecStart;
+    } else {
+        var n = parseInt(days, 10) || 0;
+        var d = new Date(end);
+        d.setDate(d.getDate() - (n - 1));
+        start = _trendFmtDate(d);
+    }
+    if (_trendExecStart && start < _trendExecStart) start = _trendExecStart;
+    var si = document.getElementById('trend-start');
+    var ei = document.getElementById('trend-end');
+    if (si) si.value = start;
+    if (ei) ei.value = end;
+    renderDailyTrend();
 }
 
 function inferCategory(summary) {
@@ -1045,6 +1148,7 @@ function initPendingPieCharts() {
             // Component stacked bar chart with datalabels
             var doneData = item.doneData;
             var totalData = item.totalData;
+            var waivedData = item.waivedData || [];
             var barLabelPlugin = {
                 id: 'barLabels',
                 afterDatasetsDraw: function(chart) {
@@ -1053,8 +1157,8 @@ function initPendingPieCharts() {
                     ctx.font = 'bold 11px sans-serif';
                     ctx.textAlign = 'center';
                     ctx.textBaseline = 'bottom';
-                    // Use dataset 1 (top of stacked bar) for Y position
-                    var meta = chart.getDatasetMeta(1);
+                    // Use dataset 2 (top segment: 未完成) for Y position
+                    var meta = chart.getDatasetMeta(2);
                     meta.data.forEach(function(bar, i) {
                         var done = doneData[i];
                         var total = totalData[i];
@@ -1071,7 +1175,8 @@ function initPendingPieCharts() {
                     labels: item.labels,
                     datasets: [
                         { label: '已完成', data: item.doneData, backgroundColor: '#27ae60', borderRadius: 4 },
-                        { label: '未完成', data: item.totalData.map(function(t, i) { return t - item.doneData[i]; }), backgroundColor: '#ddd', borderRadius: 4 }
+                        { label: '已豁免', data: waivedData, backgroundColor: '#f39c12', borderRadius: 4 },
+                        { label: '未完成', data: item.totalData.map(function(t, i) { return t - item.doneData[i] - (waivedData[i] || 0); }), backgroundColor: '#ddd', borderRadius: 4 }
                     ]
                 },
                 options: {
@@ -2491,7 +2596,7 @@ function generateWithAI() {
     if (window._pendingPasteIssues && window._pendingPasteIssues.length > 0) {
         var command = document.getElementById('ai-prompt').value.trim();
         
-        // Search entire text for assignee (e.g., "负责人为Cao Xianjie" or "负责人为E01860")
+        // Search entire text for assignee (e.g., "负责人为User A" or "负责人为a jira username")
         var assignee = '';
         var assigneeMatch = command.match(/负责人[为是:：]\s*(.+?)(?:[,，]|$)/);
         if (assigneeMatch) {
@@ -2934,7 +3039,7 @@ function llmEvalAfterUpload() {
         if (logEl) {
             var logs = logEl.textContent;
             var elapsed = window._llmActualStartTime ? ((Date.now() - window._llmActualStartTime) / 1000).toFixed(0) : null;
-            if (logs.indexOf('✅ LLM 专家评估完成，正在更新 JIRA...') !== -1 && logs.indexOf('✅ Test Plan 描述已更新: ' + uploadSelectedPlanKey) !== -1) {
+            if (logs.indexOf('LLM 专家评估完成') !== -1 && (logs.indexOf('JIRA描述更新成功') !== -1 || logs.indexOf('Test Plan 描述已更新: ' + uploadSelectedPlanKey) !== -1)) {
                 clearInterval(checkInterval);
                 if (btn) { btn.disabled = false; btn.textContent = '🧠 LLM评估上传的sub task'; }
                 if (ubcBtn2) { ubcBtn2.disabled = false; ubcBtn2.textContent = '🧠 LLM重新评估'; }
@@ -3307,6 +3412,7 @@ function generateAndUploadDescription(tasks, planSummary, planKey) {
             // Only show success AFTER PUT succeeds
             if (putResult && putResult.success !== false) {
                 addLog('✅ JIRA描述更新成功，总长度=' + desc.length, 'ok');
+                addLog('✅ Test Plan 描述已更新: ' + planKey, 'ok');
                 showLlmEvalStatus('ok', taskCount + '条测试用例描述增强成功，测试方案LLM专家评估完成');
             } else {
                 addLog('❌ JIRA描述更新失败: ' + (putResult.error || '请检查权限'), 'err');
@@ -3373,7 +3479,7 @@ function regeneratePlanDescription(skipStep3) {
         if (logEl) {
             var logs = logEl.textContent;
             var elapsed = window._llmActualStartTime ? ((Date.now() - window._llmActualStartTime) / 1000).toFixed(0) : null;
-            if (logs.indexOf('✅ LLM 专家评估完成，正在更新 JIRA...') !== -1 && logs.indexOf('✅ Test Plan 描述已更新: ' + planKey) !== -1) {
+            if (logs.indexOf('LLM 专家评估完成') !== -1 && (logs.indexOf('JIRA描述更新成功') !== -1 || logs.indexOf('Test Plan 描述已更新: ' + planKey) !== -1)) {
                 clearInterval(checkInterval);
                 if (btn) { btn.disabled = false; btn.textContent = '🧠 LLM 评估 Test Plan'; }
                 if (ubcBtn) { ubcBtn.disabled = false; ubcBtn.textContent = '🧠 LLM重新评估'; }
