@@ -91,6 +91,9 @@ BAILIAN_MODEL=br-qwen3
 # 系统配置
 DEFAULT_ADMIN_PASSWORD=CHANGE_ME
 DEFAULT_USER_PASSWORD=CHANGE_ME
+
+# 创建 issue 时的默认 reporter（JIRA 用户名/工号；未配置则省略 reporter 字段，JIRA 自动落到 PAT owner）
+JIRA_DEFAULT_REPORTER=CHANGE_ME_REPORTER
 ```
 
 ### 3. 启动服务
@@ -188,6 +191,16 @@ jira-testcase-manager/
 | GET | `/api/testcase/template` | 下载 CSV 上传模板 |
 
 ## 版本历史
+
+### v1.6.3 (2026-10-27)
+**LLM 评估轮询修复 + 公开仓去敏回归**
+
+- **修复 LLM 评估"永远显示评估中"**：前端轮询的成功判定此前匹配 `✅ LLM 专家评估完成，正在更新 JIRA...` 整串，而实际日志为 `✅ LLM 专家评估完成，原始评估长度=N，正在更新 JIRA...`（中途插入长度值），子串永不匹配 → 轮询每秒用"评估中...已等待 N 秒"覆盖已完成状态，即便 JIRA 描述已成功更新也会一直转圈（实测：评估 34s 完成且 PUT 成功，前端仍计数）
+  - 轮询条件改用最短稳定子串：`LLM 专家评估完成` +（`JIRA描述更新成功` 或 `Test Plan 描述已更新: <planKey>`）
+  - `buildFinalDescription` PUT 成功后补打标准完成标记，双条件稳定满足
+  - 同步修 upload/browse 两个入口的轮询；**教训**：轮询依赖日志子串时，标记文案必须与实际 addLog 串在同一提交内比对，防止漂移
+- **公开仓去敏回归**：v1.6.2 后的迭代把内部项目名/登录名/工号示例带回文档与注释，本轮全部泛化；`defaultReporter` 默认值改 `CHANGE_ME_REPORTER` 占位、真实值经 `JIRA_DEFAULT_REPORTER` 环境变量注入（无 env 时行为：未配置则 JIRA 自动落到 PAT owner，与解析失败路径一致）
+- 前端版本 v92
 
 ### v1.6.2 (2026-10-04)
 **父列表 /search 窗口上限修复**
