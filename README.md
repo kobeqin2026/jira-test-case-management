@@ -1,5 +1,7 @@
 # JIRA Test Case Manager
 
+[![version](docs/badge-version.svg)](https://github.com/kobeqin2026/jira-test-case-management/releases/tag/v1.7.0)
+
 JIRA 测试用例管理系统 — Test Plan / Task / Sub-task 全生命周期管理与统计平台。
 
 ## 功能概览
