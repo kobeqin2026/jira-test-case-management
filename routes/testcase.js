@@ -531,7 +531,7 @@ router.get('/search', auth.authenticateToken, async function(req, res) {
         var apiPath = '/rest/api/2/search?jql=' + encodeURIComponent(jql)
             + '&startAt=' + startAt
             + '&maxResults=' + maxResults
-            + '&fields=summary,status,assignee,priority,issuetype,created,updated,labels,description,components,customfield_10302,customfield_10303';
+            + '&fields=summary,status,assignee,priority,issuetype,created,updated,resolutiondate,labels,description,components,customfield_10302,customfield_10303';
 
         var result = await jiraRequest('GET', apiPath, null, userPat);
         var issues = result.issues.map(function(issue) {
@@ -548,6 +548,7 @@ router.get('/search', auth.authenticateToken, async function(req, res) {
                 components: (issue.fields.components || []).map(function(c) { return c.name || c; }),
                 created: issue.fields.created,
                 updated: issue.fields.updated,
+                resolutionDate: issue.fields.resolutiondate ? String(issue.fields.resolutiondate).substring(0, 10) : '',
                 actualStartDate: issue.fields.customfield_10303 || '',
                 actualEndDate: issue.fields.customfield_10302 || '',
                 url: jiraConfig.baseUrl + '/browse/' + issue.key,
@@ -897,8 +898,15 @@ router.get('/testplan/linked-tasks/:planKey', auth.authenticateToken, async func
             if (!planKey) return res.status(400).json({ success: false, error: 'Invalid planKey' });
 
             var userPat = req.user.jiraPat || '';
-            // Get plan summary
-            var planResult = await jiraRequest('GET', '/rest/api/2/issue/' + planKey + '?fields=issuelinks,summary', null, userPat);
+            // Get plan summary + 自身 Planned Start/End（customfield_10300/10301）
+            var planResult = await jiraRequest('GET', '/rest/api/2/issue/' + planKey + '?fields=issuelinks,summary,customfield_10300,customfield_10301', null, userPat);
+
+            // planKey -> Planned Start Date（YYYY-MM-DD）：父计划 + 全部 L1/L2 子计划
+            // 前端「每日执行趋势」用它画出按计划应开始的用例分布
+            var planPlannedDates = {};
+            if (planResult && planResult.fields && planResult.fields.customfield_10300) {
+                planPlannedDates[planKey] = String(planResult.fields.customfield_10300).substring(0, 10);
+            }
 
             var allSubtaskKeys = []; // all sub-tasks across all plans (3 levels)
             var allLinkedPlans = []; // only L1 linked plans for display
@@ -951,8 +959,11 @@ router.get('/testplan/linked-tasks/:planKey', auth.authenticateToken, async func
                 if (seenPlanKeys[level1Keys[i]]) continue;
                 seenPlanKeys[level1Keys[i]] = true;
                 try {
-                    var lr = await jiraRequest('GET', '/rest/api/2/issue/' + level1Keys[i] + '?fields=summary,issuetype', null, userPat);
-                    allLinkedPlans.push({ key: level1Keys[i], summary: lr.fields.summary, issuetype: lr.fields.issuetype.name, level: 1, parentKey: planKey });
+                    var lr = await jiraRequest('GET', '/rest/api/2/issue/' + level1Keys[i] + '?fields=summary,issuetype,customfield_10300,customfield_10301', null, userPat);
+                    var lps = (lr.fields && lr.fields.customfield_10300) ? String(lr.fields.customfield_10300).substring(0, 10) : '';
+                    var lpe = (lr.fields && lr.fields.customfield_10301) ? String(lr.fields.customfield_10301).substring(0, 10) : '';
+                    if (lps) planPlannedDates[level1Keys[i]] = lps;
+                    allLinkedPlans.push({ key: level1Keys[i], summary: lr.fields.summary, issuetype: lr.fields.issuetype.name, level: 1, parentKey: planKey, plannedStartDate: lps, plannedEndDate: lpe });
                 } catch (e) {}
             }
 
@@ -969,8 +980,11 @@ router.get('/testplan/linked-tasks/:planKey', auth.authenticateToken, async func
                     level2PlanKeys.push(linked2Keys[j]);
                     // Add L2 plans to display list so frontend can count their cases
                     try {
-                        var lr2 = await jiraRequest('GET', '/rest/api/2/issue/' + linked2Keys[j] + '?fields=summary,issuetype', null, userPat);
-                        allLinkedPlans.push({ key: linked2Keys[j], summary: lr2.fields.summary, issuetype: lr2.fields.issuetype.name, level: 2, parentKey: level1Keys[i] });
+                        var lr2 = await jiraRequest('GET', '/rest/api/2/issue/' + linked2Keys[j] + '?fields=summary,issuetype,customfield_10300,customfield_10301', null, userPat);
+                        var l2ps = (lr2.fields && lr2.fields.customfield_10300) ? String(lr2.fields.customfield_10300).substring(0, 10) : '';
+                        var l2pe = (lr2.fields && lr2.fields.customfield_10301) ? String(lr2.fields.customfield_10301).substring(0, 10) : '';
+                        if (l2ps) planPlannedDates[linked2Keys[j]] = l2ps;
+                        allLinkedPlans.push({ key: linked2Keys[j], summary: lr2.fields.summary, issuetype: lr2.fields.issuetype.name, level: 2, parentKey: level1Keys[i], plannedStartDate: l2ps, plannedEndDate: l2pe });
                     } catch (e) {}
                 }
             }
@@ -984,7 +998,8 @@ router.get('/testplan/linked-tasks/:planKey', auth.authenticateToken, async func
             console.log('[TestCase] Linked-tasks:', planKey, '- L1 links:', level1Keys.length, ', L2 links:', level2PlanKeys.length, ', total sub-tasks:', allSubtaskKeys.length, ', linked plans:', allLinkedPlans.length);
 
             if (allSubtaskKeys.length === 0 && allLinkedPlans.length === 0) {
-                return res.json({ success: true, data: { tasks: [], linkedPlans: [], planSummary: planResult.fields.summary } });
+                return res.json({ success: true, data: { tasks: [], linkedPlans: [], planSummary: planResult.fields.summary,
+                    planPlannedStart: planPlannedDates[planKey] || '', planPlannedDates: planPlannedDates } });
             }
 
             // Fetch details of all found sub-tasks
@@ -993,10 +1008,13 @@ router.get('/testplan/linked-tasks/:planKey', auth.authenticateToken, async func
             for (var i = 0; i < allSubtaskKeys.length; i += batchSize) {
                 var batch = allSubtaskKeys.slice(i, i + batchSize);
                 var jql = 'key in (' + batch.join(',') + ') ORDER BY created ASC';
-                var searchResult = await jiraRequest('GET', '/rest/api/2/search?jql=' + encodeURIComponent(jql) + '&fields=summary,status,issuetype,priority,description,assignee,labels,components,created,updated,parent', null, userPat);
+                var searchResult = await jiraRequest('GET', '/rest/api/2/search?jql=' + encodeURIComponent(jql) + '&fields=summary,status,issuetype,priority,description,assignee,labels,components,created,updated,resolutiondate,parent,customfield_10300,customfield_10301,customfield_10302,customfield_10303', null, userPat);
                 if (searchResult && searchResult.issues) {
                     searchResult.issues.forEach(function(issue) {
                         var parentKey = issue.fields.parent ? issue.fields.parent.key : '';
+                        // 用例自身的 Planned Start/End（逐条排期后每条不同；缺失时前端回退到所属计划的日期）
+                        var csPs = issue.fields.customfield_10300 ? String(issue.fields.customfield_10300).substring(0, 10) : '';
+                        var csPe = issue.fields.customfield_10301 ? String(issue.fields.customfield_10301).substring(0, 10) : '';
                         allTasks.push({
                             key: issue.key,
                             url: jiraConfig.baseUrl + '/browse/' + issue.key,
@@ -1010,7 +1028,12 @@ router.get('/testplan/linked-tasks/:planKey', auth.authenticateToken, async func
                             components: (issue.fields.components || []).map(function(c) { return c.name || c; }),
                             created: issue.fields.created,
                             updated: issue.fields.updated,
+                            resolutionDate: issue.fields.resolutiondate ? String(issue.fields.resolutiondate).substring(0, 10) : '',
+                            actualEndDate: issue.fields.customfield_10302 ? String(issue.fields.customfield_10302).substring(0, 10) : '',
+                            actualStartDate: issue.fields.customfield_10303 ? String(issue.fields.customfield_10303).substring(0, 10) : '',
                             parent: parentKey
+                            ,plannedStart: csPs
+                            ,plannedEnd: csPe
                         });
                     });
                 }
@@ -1033,7 +1056,10 @@ router.get('/testplan/linked-tasks/:planKey', auth.authenticateToken, async func
                     planSummary: planResult.fields.summary,
                     tasks: allTasks,
                     directTasks: directTasks,
-                    linkedPlans: allLinkedPlans
+                    linkedPlans: allLinkedPlans,
+                    // 父计划自身 + 全部子计划的 Planned Start（YYYY-MM-DD），供「每日执行趋势」画计划曲线
+                    planPlannedStart: planPlannedDates[planKey] || '',
+                    planPlannedDates: planPlannedDates
                 }
             });
         } catch (error) {

@@ -1,20 +1,24 @@
 #!/bin/bash
 # Deploy frontend files to nginx
 # Usage: ./deploy.sh
+#   DEPLOY_DIR  目标目录，默认 /var/www/jira-testcase（可用环境变量覆盖）
 
 set -e
 
-echo "Deploying frontend files..."
+REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
+DEPLOY_DIR="${DEPLOY_DIR:-/var/www/jira-testcase}"
+
+echo "Deploying frontend files from $REPO_DIR to $DEPLOY_DIR ..."
 
 # Copy HTML
-sudo cp /home/br188/jira-testcase-manager/public/jira-test-case-management.html /var/www/jira-testcase/
-sudo chown www-data:www-data /var/www/jira-testcase/jira-test-case-management.html
-sudo chmod 644 /var/www/jira-testcase/jira-test-case-management.html
+sudo cp "$REPO_DIR/public/jira-test-case-management.html" "$DEPLOY_DIR/"
+sudo chown www-data:www-data "$DEPLOY_DIR/jira-test-case-management.html"
+sudo chmod 644 "$DEPLOY_DIR/jira-test-case-management.html"
 
 # Copy JS
-sudo cp /home/br188/jira-testcase-manager/public/js/testcase-upload.js /var/www/jira-testcase/js/
-sudo chown www-data:www-data /var/www/jira-testcase/js/testcase-upload.js
-sudo chmod 644 /var/www/jira-testcase/js/testcase-upload.js
+sudo cp "$REPO_DIR/public/js/testcase-upload.js" "$DEPLOY_DIR/js/"
+sudo chown www-data:www-data "$DEPLOY_DIR/js/testcase-upload.js"
+sudo chmod 644 "$DEPLOY_DIR/js/testcase-upload.js"
 
 echo "Frontend deployed OK"
 echo "Access at: http://<server-ip>:8089/"

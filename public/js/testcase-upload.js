@@ -19,43 +19,129 @@ var APP_CONFIG = { jiraBase: '', tcProject: '' };
 function browseHref(key){ return (APP_CONFIG.jiraBase || 'https://jira.example.com') + '/browse/' + key; }
 
 // ============ Chart.js Pie Label Plugin ============
+// 2026-11-09: 小比例扇区的标签在环内会互相压字 → 统一改为环外标签 + 引线(callout)。
+// 每个扇区从中点沿半径拉出：弧外缘 → 折点(elbow) → 水平段 → 文本(左/右对齐)。
+// 同侧标签按理想 y 排序后做最小间距(16px)避让，空间不足时整体上下平移，保证不重叠。
 var pieLabelPlugin = {
     id: 'pieLabel',
     afterDatasetsDraw: function(chart) {
         if (chart.config.type !== 'pie' && chart.config.type !== 'doughnut') return;
         var ctx = chart.ctx;
-        var dataset = chart.data.datasets[0];
-        var labels = chart.data.labels;
+        var dataset = (chart.data.datasets || [])[0];
+        if (!dataset || !dataset.data) return;
+        var labels = chart.data.labels || [];
         var meta = chart.getDatasetMeta(0);
-        var total = dataset.data.reduce(function(a, b) { return a + b; }, 0);
-        if (total === 0) return;
-        var centerX = meta.data[0].x;
-        var centerY = meta.data[0].y;
-        var outerRadius = meta.data[0].outerRadius;
-        var innerRadius = meta.data[0].innerRadius || 0;
+        if (!meta || !meta.data || !meta.data.length) return;
+
+        var total = 0;
+        dataset.data.forEach(function(v) { total += (+v || 0); });
+        if (total <= 0) return;
+
+        var area = chart.chartArea || { top: 0, bottom: chart.height, left: 0, right: chart.width };
+        var FONT = 'bold 11px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+        var LINE_GAP = 16;      // 同侧标签最小行距(px)
+        var ELBOW_GAP = 14;     // 弧外缘到折点的径向距离(px)
+        var PADX = 5;           // 文本与折点横线的间距(px)
+
         ctx.save();
+        ctx.font = FONT;
+        ctx.textBaseline = 'middle';
+        ctx.lineWidth = 1;
+
+        var colors = dataset.backgroundColor || [];
+        var items = [];
         meta.data.forEach(function(arc, i) {
-            var value = dataset.data[i];
-            var pct = Math.round((value / total) * 100);
-            if (pct < 1) return;
-            var label = labels[i] || '';
-            var color = dataset.backgroundColor[i];
-            var textColor = isLightColor(color) ? '#333' : '#fff';
-            var angle = arc.startAngle + (arc.endAngle - arc.startAngle) / 2;
-            var ringWidth = outerRadius - innerRadius;
-            var labelR = innerRadius + ringWidth * 0.5;
-            var labelX = centerX + Math.cos(angle) * labelR;
-            var labelY = centerY + Math.sin(angle) * labelR;
-            ctx.textAlign = 'center';
-            ctx.textBaseline = 'middle';
-            var nameSize = Math.max(9, Math.min(12, ringWidth * 0.22));
-            ctx.font = 'bold ' + nameSize + 'px sans-serif';
-            ctx.fillStyle = textColor;
-            ctx.fillText(label, labelX, labelY - nameSize * 0.55);
-            var pctSize = Math.max(9, Math.min(11, ringWidth * 0.20));
-            ctx.font = 'bold ' + pctSize + 'px sans-serif';
-            ctx.fillText(pct + '%', labelX, labelY + pctSize * 0.6);
+            var value = +dataset.data[i] || 0;
+            if (value <= 0) return;                    // 0 值扇区不画标签
+            var mid = (arc.startAngle + arc.endAngle) / 2;
+            var side = Math.cos(mid) >= 0 ? 1 : -1;
+            items.push({
+                i: i,
+                label: labels[i] || '',
+                pct: value / total * 100,
+                value: value,
+                cos: Math.cos(mid),
+                sin: Math.sin(mid),
+                side: side,
+                cx: arc.x,
+                cy: arc.y,
+                outer: arc.outerRadius,
+                color: (colors && colors[i]) || '#7f8c9a'
+            });
         });
+        if (!items.length) { ctx.restore(); return; }
+
+        // 百分比：保留 1 位小数，小比例也能看出差异
+        function pctText(p) { return (Math.round(p * 10) / 10).toFixed(1) + '%'; }
+
+        [1, -1].forEach(function(side) {
+            var group = items.filter(function(it) { return it.side === side; });
+            if (!group.length) return;
+
+            // 以「扇区中点方向的理想 y」排序；角度接近时大扇区优先靠中
+            group.sort(function(a, b) { return a.sin - b.sin || b.pct - a.pct; });
+            group.forEach(function(it) {
+                it.text = it.label + ' ' + pctText(it.pct);
+                it.textW = ctx.measureText(it.text).width;
+                it.idealY = it.cy + it.sin * (it.outer + ELBOW_GAP);
+            });
+
+            var minY = area.top + 8;
+            var maxY = area.bottom - 8;
+
+            // 自上而下拉开最小间距
+            var y = minY - LINE_GAP;
+            group.forEach(function(it) {
+                it.labelY = Math.max(it.idealY, y + LINE_GAP);
+                y = it.labelY;
+            });
+            // 底部溢出则自下而上回推
+            var overflow = group[group.length - 1].labelY - maxY;
+            if (overflow > 0) {
+                group[group.length - 1].labelY -= overflow;
+                for (var k = group.length - 2; k >= 0; k--) {
+                    if (group[k].labelY > group[k + 1].labelY - LINE_GAP) {
+                        group[k].labelY = group[k + 1].labelY - LINE_GAP;
+                    }
+                }
+            }
+            // 仍顶到上边界则整体下移
+            if (group[0].labelY < minY) {
+                var shift = minY - group[0].labelY;
+                group.forEach(function(it) { it.labelY += shift; });
+            }
+
+            group.forEach(function(it) {
+                var p0x = it.cx + it.cos * it.outer;
+                var p0y = it.cy + it.sin * it.outer;
+                var p1x = it.cx + it.cos * (it.outer + ELBOW_GAP);
+                var p1y = it.cy + it.sin * (it.outer + ELBOW_GAP);
+                var p2x = it.cx + side * (it.outer + ELBOW_GAP + 10);
+                var p2y = it.labelY;
+
+                // 引线：弧外缘 → 折点 → 水平段端点
+                ctx.beginPath();
+                ctx.moveTo(p0x, p0y);
+                ctx.lineTo(p1x, p1y);
+                ctx.lineTo(p2x, p2y);
+                ctx.strokeStyle = it.color;
+                ctx.globalAlpha = 0.9;
+                ctx.stroke();
+                ctx.globalAlpha = 1;
+
+                // 折点小圆点
+                ctx.beginPath();
+                ctx.arc(p2x, p2y, 1.8, 0, Math.PI * 2);
+                ctx.fillStyle = it.color;
+                ctx.fill();
+
+                // 文本统一在环外：右侧左对齐 / 左侧右对齐
+                ctx.textAlign = side > 0 ? 'left' : 'right';
+                ctx.fillStyle = '#333';
+                ctx.fillText(it.text, p2x + side * PADX, p2y);
+            });
+        });
+
         ctx.restore();
     }
 };
@@ -157,6 +243,8 @@ function checkAuth() {
             document.getElementById('login-overlay').style.display = 'flex';
             document.getElementById('btn-logout').style.display = 'none';
             document.getElementById('btn-profile').style.display = 'none';
+            var barEl = document.getElementById('auto-refresh-bar');
+            if (barEl) barEl.style.display = 'none';
         }
     })
     .catch(function() {
@@ -213,6 +301,11 @@ function doLogout() {
     localStorage.removeItem('testcaseAuthToken');
     localStorage.removeItem('testcaseUserRole');
     localStorage.removeItem('testcaseUserName');
+    // 停止自动刷新并隐藏控制条
+    if (autoRefreshTimer) { clearTimeout(autoRefreshTimer); autoRefreshTimer = null; }
+    autoRefreshNextAt = 0;
+    var refreshBar = document.getElementById('auto-refresh-bar');
+    if (refreshBar) refreshBar.style.display = 'none';
     document.getElementById('login-overlay').style.display = 'flex';
     document.getElementById('btn-logout').style.display = 'none';
     document.getElementById('header-user-info').style.display = 'none';
@@ -265,6 +358,9 @@ function updateHeaderUI() {
     }
     profileBtn.style.display = 'inline-flex';
     logoutEl.style.display = 'inline-block';
+
+    // 登录成功后启用自动刷新控制 (默认30分钟, 手动立即刷新始终可用)
+    initAutoRefreshUI();
 }
 
 function showUserModal() {
@@ -425,7 +521,7 @@ function saveProfile() {
 // ============ Projects ============
 
 function loadProjects() {
-    fetch('/api/testcase/projects', {
+    return fetch('/api/testcase/projects', {
         credentials: 'same-origin',
         headers: authToken ? { 'Authorization': 'Bearer ' + authToken } : {}
     })
@@ -434,6 +530,7 @@ function loadProjects() {
         if (data.success && data.data) {
             ['browse-project', 'tc-project'].forEach(function(id) {
                 var sel = document.getElementById(id);
+                var prev = sel.value;   // 自动刷新时保留当前选择
                 sel.innerHTML = '<option value="">-- 选择项目 --</option>';
                 data.data.forEach(function(p) {
                     var opt = document.createElement('option');
@@ -441,11 +538,15 @@ function loadProjects() {
                     opt.textContent = p.key + ' — ' + p.name;
                     sel.appendChild(opt);
                 });
+                if (prev) sel.value = prev;
             });
+            return true;
         }
+        return false;
     })
     .catch(function(e) {
         console.error('Load projects failed:', e);
+        return false;
     });
 }
 
@@ -525,18 +626,22 @@ function showBreadcrumb(project, parentKey, parentSummary, parentStatus) {
     }
 }
 
-function loadParents() {
+function loadParents(opts) {
+    opts = opts || {};
+    var silent = !!opts.silent;   // 自动刷新: 不显示 loading、不重置搜索/滚动
     var project = document.getElementById('browse-project').value;
-    if (!project) return;
+    if (!project) return Promise.resolve(false);
 
-    document.getElementById('parent-section').style.display = 'block';
-    document.getElementById('parent-grid').innerHTML = '<div class="loading">加载中...</div>';
+    if (!silent) {
+        document.getElementById('parent-section').style.display = 'block';
+        document.getElementById('parent-grid').innerHTML = '<div class="loading">加载中...</div>';
 
-    // Show breadcrumb with project
-    showBreadcrumb(project);
+        // Show breadcrumb with project
+        showBreadcrumb(project);
+    }
 
     // Fetch project components for filter
-    projectComponents = [];
+    if (!silent) projectComponents = [];
     fetch('/api/testcase/components?project=' + encodeURIComponent(project), {
         credentials: 'same-origin',
         headers: authToken ? { 'Authorization': 'Bearer ' + authToken } : {}
@@ -550,7 +655,7 @@ function loadParents() {
     .catch(function() {});
 
     // Fetch both Task and Test Plan
-    fetch('/api/testcase/search?project=' + encodeURIComponent(project) + '&issuetype=Task,Test+Plan&maxResults=500', {
+    return fetch('/api/testcase/search?project=' + encodeURIComponent(project) + '&issuetype=Task,Test+Plan&maxResults=500', {
         credentials: 'same-origin',
         headers: authToken ? { 'Authorization': 'Bearer ' + authToken } : {}
     })
@@ -562,13 +667,22 @@ function loadParents() {
         if (data.success && data.data) {
             allParents = data.data.issues || [];
             document.getElementById('parent-count').textContent = allParents.length + ' 个';
+            var gridScroll = document.getElementById('parent-grid').scrollTop;
             renderParentGrid(allParents);
-        } else {
-            document.getElementById('parent-grid').innerHTML = renderApiError(res.status, data);
+            document.getElementById('parent-grid').scrollTop = gridScroll || 0;
+            // 保持搜索过滤
+            var q = document.getElementById('parent-search').value.trim();
+            if (q) filterParents();
+            return true;
         }
+        if (silent) throw new Error(data.message || data.error || ('HTTP ' + res.status));
+        document.getElementById('parent-grid').innerHTML = renderApiError(res.status, data);
+        return false;
     })
     .catch(function(e) {
+        if (silent) throw e;
         document.getElementById('parent-grid').innerHTML = '<div class="empty-state"><p>加载失败: ' + e.message + '</p></div>';
+        return false;
     });
 }
 
@@ -640,9 +754,14 @@ function selectParent(key) {
 
 // ============ Load Parent Detail (fetch + render) ============
 
-function loadParentDetail(key) {
+function loadParentDetail(key, opts) {
+    opts = opts || {};
+    var silent = !!opts.silent;   // 自动刷新: 保留筛选/排序/勾选/滚动, 不显示"刷新中"占位
+    if (!silent) {
+        document.getElementById('regen-desc-status').textContent = '';
+    }
     // Use linked-tasks endpoint (supports 3-level recursion) — re-fetches fresh statuses from JIRA
-    fetch('/api/testcase/testplan/linked-tasks/' + key, {
+    return fetch('/api/testcase/testplan/linked-tasks/' + key, {
         credentials: 'same-origin',
         headers: authToken ? { 'Authorization': 'Bearer ' + authToken } : {}
     })
@@ -652,29 +771,431 @@ function loadParentDetail(key) {
 
         subtasks = data.data.tasks || [];
         linkedPlans = data.data.linkedPlans || [];
+        // 父计划 + 全部子计划的 Planned Start（YYYY-MM-DD）：供每日执行趋势画「计划开始」曲线
+        _planPlannedDates = data.data.planPlannedDates || {};
+        _planPlannedStart = data.data.planPlannedStart || '';
 
         renderLinkedPlans(linkedPlans);
+
         renderKPI(subtasks);
         renderDistributions(subtasks);
         initPendingPieCharts();
-        renderDetailTable(subtasks);
+        if (silent) {
+            applySilentRefresh(subtasks);
+        } else {
+            renderDetailTable(subtasks);
+        }
+        return true;
     })
     .catch(function(e) {
-        document.getElementById('detail-section').innerHTML = '<div class="empty-state"><p>加载失败: ' + e.message + '</p></div>';
+        if (silent) throw e;
+        // 局部报错: 不再销毁整个 detail-section (KPI/图表面板保留)
+        document.getElementById('detail-thead').innerHTML = '<tr><th>加载失败</th></tr>';
+        document.getElementById('detail-tbody').innerHTML = '<tr><td colspan="8" style="text-align:center; padding:20px; color:#e74c3c;">加载失败: ' + escapeHtml(e.message) + '</td></tr>';
+        return false;
     });
 }
 
+// 静默刷新详情表: 保留当前筛选/排序/勾选/滚动位置
+function applySilentRefresh(issues) {
+    allSubtasksGlobal = issues;
+    allDetailIssues = issues;
+    document.getElementById('detail-count').textContent = issues.length + ' 条';
+
+    if (issues.length > 0) {
+        document.getElementById('filter-card').style.display = '';
+        populateFilterDropdowns(issues);   // 内部会保留当前已选筛选项
+    } else {
+        document.getElementById('filter-card').style.display = 'none';
+    }
+
+    // 移除已不存在的勾选项
+    var alive = {};
+    issues.forEach(function(i) { alive[i.key] = true; });
+    Array.from(selectedKeys).forEach(function(k) { if (!alive[k]) selectedKeys.delete(k); });
+    updateChangeUI();
+    updateBatchBar();
+
+    var wrap = document.querySelector('#detail-section .table-wrap');
+    var st = wrap ? wrap.scrollTop : 0;
+    applyFilters();
+    if (wrap) wrap.scrollTop = st;
+}
+
+// ============ Export: 所有 Domain 实际执行比例 (CSV) ============
+// domain = 当前 Test Plan 下关联的 Sub-Test Plan (含 L2)；实际执行 = 状态 Validated 的用例数 / 用例总数
+
+function _csvEscape(v) {
+    var s = (v === null || v === undefined) ? '' : String(v);
+    if (/[",\r\n]/.test(s)) return '"' + s.replace(/"/g, '""') + '"';
+    return s;
+}
+
+function _downloadCsv(filename, rows) {
+    var lines = rows.map(function(r) { return r.map(_csvEscape).join(','); });
+    var blob = new Blob(['\ufeff' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8;' });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function() {
+        if (a.parentNode) a.parentNode.removeChild(a);
+        URL.revokeObjectURL(url);
+    }, 300);
+}
+
+function _execStatEmpty() {
+    return { total: 0, validated: 0, todo: 0, inprogress: 0, done: 0, waived: 0, other: 0 };
+}
+
+function _execAdd(target, issue) {
+    var ns = normalizeStatus(issue.status);
+    target.total++;
+    if (ns === 'validated') target.validated++;
+    else if (ns === 'todo') target.todo++;
+    else if (ns === 'inprogress') target.inprogress++;
+    else if (ns === 'done' || ns === 'closed') target.done++;
+    else if (ns === 'waived') target.waived++;
+    else target.other++;
+}
+
+function _execRate(s) {
+    return s.total > 0 ? (Math.round((s.validated / s.total) * 1000) / 10).toFixed(1) + '%' : '0.0%';
+}
+
+function exportDomainExecution() {
+    if (!selectedParent) { alert('请先在第二步选择一个 Test Plan'); return; }
+    var btn = document.getElementById('btn-export-domain');
+    var st = document.getElementById('export-domain-status');
+    var parentKey = selectedParent.key;
+    var parentSummary = selectedParent.summary || '';
+
+    if (btn) { btn.disabled = true; btn.textContent = '⏳ 导出中…'; }
+    if (st) { st.style.color = '#666'; st.textContent = '正在从 JIRA 获取最新执行状态…'; }
+
+    return fetch('/api/testcase/testplan/linked-tasks/' + parentKey, {
+        credentials: 'same-origin',
+        headers: authToken ? { 'Authorization': 'Bearer ' + authToken } : {}
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        if (!data.success || !data.data) throw new Error(data.error || '获取计划数据失败');
+
+        var tasks = data.data.tasks || [];
+        var plans = (data.data.linkedPlans || []).slice();
+        var planMap = {};
+        plans.forEach(function(p) { planMap[p.key] = p; });
+
+        // 每个计划自己的用例统计（按 case.parent），L1 行再叠加其 L2 子计划的用例
+        var ownStats = {};
+        function ensureOwn(k) { if (!ownStats[k]) ownStats[k] = _execStatEmpty(); return ownStats[k]; }
+
+        var orphanKeys = [];
+        tasks.forEach(function(t) {
+            var own = t.parent || '';
+            _execAdd(ensureOwn(own), t);
+            if (!planMap[own] && own && orphanKeys.indexOf(own) < 0) orphanKeys.push(own);
+        });
+
+        function mergeStat(dst, src) {
+            Object.keys(dst).forEach(function(k) { dst[k] += (src[k] || 0); });
+        }
+        // level=1 时包含其 L2 子计划的用例；L2 行只统计自身
+        function statFor(key, level) {
+            var s = _execStatEmpty();
+            mergeStat(s, ownStats[key] || _execStatEmpty());
+            if (level !== 2) {
+                plans.forEach(function(c) {
+                    if (c.level === 2 && c.parentKey === key) mergeStat(s, ownStats[c.key] || _execStatEmpty());
+                });
+            }
+            return s;
+        }
+
+        var sum = _execStatEmpty();
+        var rows = [];
+        var header = ['Domain Key', 'Domain 名称', '层级', '用例总数', '已执行(Validated)', '执行率',
+                      '未开始', '进行中', '已完成未验证', '已豁免', '阻塞/其他', '计划开始', '计划结束'];
+        rows.push(header);
+
+        function pushPlanRow(p, levelLabel) {
+            var s = statFor(p.key, p.level || 1);
+            rows.push([
+                p.key,
+                p.summary || '',
+                levelLabel,
+                s.total,
+                s.validated,
+                _execRate(s),
+                s.todo,
+                s.inprogress,
+                s.done,
+                s.waived,
+                s.other,
+                p.plannedStartDate || '',
+                p.plannedEndDate || ''
+            ]);
+        }
+        function addToSum(s) {
+            mergeStat(sum, s);
+        }
+
+        var l1 = plans.filter(function(p) { return p.level === 1; });
+        var l2 = plans.filter(function(p) { return p.level === 2; });
+        var listed = {};
+
+        if (plans.length === 0) {
+            // 没有关联子计划：把当前计划自身作为唯一 domain 行
+            var s0 = statFor(parentKey, 1);
+            if (s0.total === 0) { // 用例 parent 可能非计划 key，兜底全量
+                s0 = _execStatEmpty();
+                tasks.forEach(function(t) { _execAdd(s0, t); });
+            }
+            rows.push([parentKey, parentSummary, '当前计划', s0.total, s0.validated, _execRate(s0),
+                       s0.todo, s0.inprogress, s0.done, s0.waived, s0.other,
+                       selectedParent.startDate || '', selectedParent.endDate || '']);
+            addToSum(s0);
+            listed[parentKey] = true;
+        } else {
+            // 当前计划自身直挂的用例（不归属任何子计划）也作为一行，避免合计漏数
+            if (ownStats[parentKey] && ownStats[parentKey].total > 0) {
+                var sd = ownStats[parentKey];
+                rows.push([parentKey, parentSummary + '（本计划直挂用例）', '当前计划直挂',
+                           sd.total, sd.validated, _execRate(sd), sd.todo, sd.inprogress,
+                           sd.done, sd.waived, sd.other, '', '']);
+                addToSum(sd);
+            }
+            l1.forEach(function(p) {
+                pushPlanRow(p, 'L1 Domain');
+                listed[p.key] = true;
+                addToSum(statFor(p.key, 1));
+                l2.forEach(function(c) {
+                    if (c.parentKey === p.key) { pushPlanRow(c, '  └─ L2 Sub-plan'); listed[c.key] = true; }
+                });
+            });
+            // L1 缺失的 L2 / 未关联计划的父 key，避免漏统计
+            l2.forEach(function(p) {
+                if (listed[p.key]) return;
+                if (p.parentKey && planMap[p.parentKey] && planMap[p.parentKey].level === 1) return;
+                pushPlanRow(p, 'L2 Sub-plan');
+                listed[p.key] = true;
+                addToSum(statFor(p.key, 2));
+            });
+            orphanKeys.forEach(function(k) {
+                if (listed[k]) return;
+                rows.push([k, '(未在关联计划列表中出现)', '未关联',
+                           ownStats[k].total, ownStats[k].validated, _execRate(ownStats[k]),
+                           ownStats[k].todo, ownStats[k].inprogress, ownStats[k].done,
+                           ownStats[k].waived, ownStats[k].other, '', '']);
+                addToSum(ownStats[k]);
+                listed[k] = true;
+            });
+        }
+
+        rows.push(['合计', '', '', sum.total, sum.validated, _execRate(sum),
+                   sum.todo, sum.inprogress, sum.done, sum.waived, sum.other, '', '']);
+
+        var d = new Date();
+        var stamp = d.getFullYear() + ('0' + (d.getMonth() + 1)).slice(-2) + ('0' + d.getDate()).slice(-2)
+                  + '_' + ('0' + d.getHours()).slice(-2) + ('0' + d.getMinutes()).slice(-2);
+        _downloadCsv(parentKey + '_domain_execution_' + stamp + '.csv', rows);
+
+        var domainCount = plans.length ? (l1.length || plans.length) : 1;
+        if (st) {
+            st.style.color = '#27ae60';
+            st.textContent = '✅ 已导出 ' + domainCount + ' 个domain · 合计 ' + sum.total + ' 用例 · 执行率 ' + _execRate(sum);
+        }
+        return true;
+    })
+    .catch(function(e) {
+        if (st) { st.style.color = '#e74c3c'; st.textContent = '❌ 导出失败: ' + e.message; }
+        showToast('❌ 导出失败: ' + e.message, 'error');
+        return false;
+    })
+    .then(function() {
+        if (btn) { btn.disabled = false; btn.textContent = '📥 导出所有Domain执行率'; }
+    });
+}
 // ============ Refresh Test Case Statuses ============
 
+// 面包屑里的"刷新状态"按钮: 走统一手动刷新(带状态反馈, 保留筛选/滚动)
 function refreshTestCases() {
-    if (!selectedParent) return;
-    // Clear current view to show loading state, then re-fetch fresh statuses
-    document.getElementById('detail-thead').innerHTML = '<tr><th>刷新中...</th></tr>';
-    document.getElementById('detail-tbody').innerHTML = '';
-    document.getElementById('kpi-total').textContent = '...';
-    document.getElementById('dist-row').innerHTML = '';
-    loadParentDetail(selectedParent.key);
+    manualRefresh();
 }
+
+// ============ Auto Refresh (2026-11-09): 默认每30分钟从 JIRA 重新获取 + 手动立即刷新 ============
+var autoRefreshTimer = null;
+var autoRefreshInterval = 30 * 60 * 1000;   // 默认 30 分钟
+var autoRefreshNextAt = 0;
+var autoRefreshLastAt = '';
+var autoRefreshLastAttemptAt = 0;
+var autoRefreshBusy = false;
+var autoRefreshNote = '';
+var autoRefreshNoteColor = '';
+var AUTO_REFRESH_KEY = 'testcaseAutoRefreshInterval';
+
+function pad2(n) { return (n < 10 ? '0' : '') + n; }
+
+function nowTimeStr() {
+    var d = new Date();
+    return pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ':' + pad2(d.getSeconds());
+}
+
+// 登录成功后调用: 显示控制条并恢复上次选择的间隔(默认30分钟)
+function initAutoRefreshUI() {
+    var bar = document.getElementById('auto-refresh-bar');
+    if (!bar) return;
+    var sel = document.getElementById('auto-refresh');
+    var saved = null;
+    try { saved = localStorage.getItem(AUTO_REFRESH_KEY); } catch (e) {}
+    if (saved !== null && ['0', '900000', '1800000', '3600000'].indexOf(String(saved)) >= 0) {
+        sel.value = String(saved);
+    }
+    bar.style.display = 'flex';
+    applyAutoRefreshInterval(parseInt(sel.value, 10));
+}
+
+function onAutoRefreshChange() {
+    var sel = document.getElementById('auto-refresh');
+    applyAutoRefreshInterval(parseInt(sel.value, 10));
+}
+
+function applyAutoRefreshInterval(ms) {
+    if (isNaN(ms) || ms < 0) ms = 0;
+    autoRefreshInterval = ms;
+    try { localStorage.setItem(AUTO_REFRESH_KEY, String(ms)); } catch (e) {}
+    autoRefreshNote = '';
+    scheduleAutoRefresh();
+}
+
+function scheduleAutoRefresh() {
+    if (autoRefreshTimer) { clearTimeout(autoRefreshTimer); autoRefreshTimer = null; }
+    autoRefreshNextAt = 0;
+    if (autoRefreshInterval > 0) {
+        autoRefreshNextAt = Date.now() + autoRefreshInterval;
+        autoRefreshTimer = setTimeout(function() { autoRefreshTick(); }, autoRefreshInterval);
+    }
+    updateAutoRefreshStatus();
+}
+
+function autoRefreshTick() {
+    autoRefreshLastAttemptAt = Date.now();
+    runRefresh({ silent: true }).then(function() { scheduleAutoRefresh(); });
+}
+
+function autoRefreshBaseText() {
+    if (autoRefreshInterval <= 0) return '自动刷新: 关闭';
+    var min = Math.round(autoRefreshInterval / 60000);
+    var txt = '自动刷新: 每' + min + '分钟';
+    if (autoRefreshNextAt) {
+        var d = new Date(autoRefreshNextAt);
+        txt += ' · 下次 ' + pad2(d.getHours()) + ':' + pad2(d.getMinutes());
+    }
+    if (autoRefreshLastAt) txt += ' · 上次 ' + autoRefreshLastAt;
+    return txt;
+}
+
+// 传 note 更新提示(会驻留到下次成功刷新); 不传则仅按当前状态重建文本
+function updateAutoRefreshStatus(note, color) {
+    if (arguments.length > 0) {
+        autoRefreshNote = note || '';
+        autoRefreshNoteColor = color || '';
+    }
+    var el = document.getElementById('auto-refresh-status');
+    if (!el) return;
+    el.textContent = autoRefreshBaseText() + (autoRefreshNote ? ' · ' + autoRefreshNote : '');
+    if (autoRefreshNote) el.style.color = autoRefreshNoteColor || '#888';
+    else el.style.color = autoRefreshInterval > 0 ? '#27ae60' : '#888';
+}
+
+function isElVisible(id) {
+    var el = document.getElementById(id);
+    return !!el && el.style.display !== 'none';
+}
+
+function activeTabName() {
+    var el = document.querySelector('.tab-content.active');
+    return el ? el.id.replace('tab-', '') : 'browse';
+}
+
+function anyDialogOpen() {
+    var ids = ['create-tc-modal', 'create-stp-modal', 'date-modal', 'user-modal', 'profile-modal'];
+    for (var i = 0; i < ids.length; i++) {
+        var el = document.getElementById(ids[i]);
+        if (el && el.style.display !== 'none' && el.style.display !== '') return true;
+    }
+    return false;
+}
+
+function hasUnsavedStatusChanges() {
+    return Object.keys(pendingChanges || {}).length > 0;
+}
+
+// 统一刷新入口: silent=true 为自动刷新(有前置条件), false 为手动触发
+function runRefresh(opts) {
+    opts = opts || {};
+    var silent = !!opts.silent;
+    if (autoRefreshBusy) return Promise.resolve(false);
+    if (!authToken) return Promise.resolve(false);
+
+    if (silent) {
+        if (document.hidden) { updateAutoRefreshStatus('页面在后台，本轮跳过', '#e67e22'); return Promise.resolve(false); }
+        if (activeTabName() !== 'browse') { updateAutoRefreshStatus('上传页不刷新，本轮跳过', '#e67e22'); return Promise.resolve(false); }
+        if (anyDialogOpen()) { updateAutoRefreshStatus('弹窗打开中，本轮跳过', '#e67e22'); return Promise.resolve(false); }
+        if (hasUnsavedStatusChanges()) { updateAutoRefreshStatus('有未保存的状态修改，自动刷新暂停（保存后恢复）', '#e67e22'); return Promise.resolve(false); }
+    } else if (hasUnsavedStatusChanges()) {
+        var n = Object.keys(pendingChanges).length;
+        if (!confirm('有 ' + n + ' 项状态修改尚未保存到 JIRA，刷新会丢失这些修改。继续刷新？')) return Promise.resolve(false);
+    }
+
+    autoRefreshBusy = true;
+    updateAutoRefreshStatus('正在从 JIRA 获取最新数据…', '#2980b9');
+
+    var job;
+    if (selectedParent && isElVisible('detail-section')) {
+        job = loadParentDetail(selectedParent.key, { silent: true });
+    } else if (document.getElementById('browse-project').value) {
+        job = loadParents({ silent: true });   // Parent 列表 / 项目已选但未展开
+    } else {
+        job = loadProjects();                  // 首页: 仅刷新项目下拉
+    }
+
+    return job.then(function(ok) {
+        if (ok === false) throw new Error('数据未更新');
+        autoRefreshLastAt = nowTimeStr();
+        updateAutoRefreshStatus('', '');       // 清除提示, 显示"上次"
+        return true;
+    }).catch(function(e) {
+        var msg = (e && e.message) ? e.message : String(e);
+        updateAutoRefreshStatus('❌ 刷新失败: ' + msg, '#e74c3c');
+        if (!silent) showToast('❌ 刷新失败: ' + msg, 'error');
+        return false;
+    }).then(function(ok) {
+        autoRefreshBusy = false;
+        return ok;
+    });
+}
+
+// 手动触发: 立即从 JIRA 拉一次(不等自动刷新), 按钮和状态栏都有可见反馈
+function manualRefresh() {
+    var btn = document.getElementById('manual-refresh-btn');
+    if (btn) { btn.disabled = true; btn.textContent = '⏳ 刷新中…'; }
+    runRefresh({ silent: false }).then(function() {
+        if (btn) { btn.disabled = false; btn.textContent = '🔄 立即刷新'; }
+        scheduleAutoRefresh();   // 手动刷过之后重新计时
+    });
+}
+
+// 回到前台时若已超过一个间隔, 立即补一次
+document.addEventListener('visibilitychange', function() {
+    if (!document.hidden && autoRefreshInterval > 0 && !autoRefreshBusy) {
+        if (!autoRefreshLastAttemptAt || Date.now() - autoRefreshLastAttemptAt >= autoRefreshInterval) {
+            autoRefreshTick();
+        }
+    }
+});
 
 function renderLinkedPlans(plans) {
     // Remove old linked plans section if exists
@@ -885,6 +1406,31 @@ var _trendIssues = [];
 var _trendExecStart = '';
 var _trendExecEnd = '';
 var _trendChartInstance = null;
+// planKey -> Planned Start Date（后端 linked-tasks 返回，含父计划与全部子计划）
+var _planPlannedDates = {};
+var _planPlannedStart = '';
+
+// 用例自身的 Planned Start（customfield_10300，逐条排期后每条不同）；缺失时回退到所属测试计划的日期
+function _casePlannedStart(i) {
+    if (!i) return '';
+    var v = i.plannedStart || (_planPlannedDates[i.parent] || '');
+    return v ? String(v).substring(0, 10) : '';
+}
+
+// 计划开始日期全集（用例级优先 + 计划级兜底），用于默认时间窗；
+// 同时纳入用例的 Planned End，保证时间轴覆盖到最后一个用例收口日
+function _plannedStartWindowDates() {
+    var set = {};
+    (_trendIssues || []).forEach(function(i) {
+        var v = _casePlannedStart(i); if (v) set[v] = true;
+        if (i && i.plannedEnd) { var e = String(i.plannedEnd).substring(0, 10); if (e) set[e] = true; }
+    });
+    Object.keys(_planPlannedDates || {}).forEach(function(k) {
+        var v = _planPlannedDates[k] ? String(_planPlannedDates[k]).substring(0, 10) : '';
+        if (v) set[v] = true;
+    });
+    return Object.keys(set).sort();
+}
 
 // Format a Date to local YYYY-MM-DD (avoids UTC toISOString timezone shift)
 function _trendFmtDate(d) {
@@ -912,6 +1458,15 @@ function renderDailyTrend(issues, reset) {
         if (dateSet.length) { defaultStart = dateSet[0]; defaultEnd = dateSet[dateSet.length - 1]; }
     }
 
+    // 「计划开始」日期（用例级 Planned Start 优先，缺失回退到计划级）也纳入默认时间窗，
+    // 否则计划点落在执行窗口外，曲线看不见
+    var plannedDateList = _plannedStartWindowDates();
+    if (plannedDateList.length) {
+        if (!defaultStart || plannedDateList[0] < defaultStart) defaultStart = plannedDateList[0];
+        var _lastPlanned = plannedDateList[plannedDateList.length - 1];
+        if (!defaultEnd || _lastPlanned > defaultEnd) defaultEnd = _lastPlanned;
+    }
+
     var inStart = document.getElementById('trend-start');
     var inEnd = document.getElementById('trend-end');
     var start, end;
@@ -932,15 +1487,45 @@ function renderDailyTrend(issues, reset) {
     // Count validated per day within [start, end]
     var validatedDaily = {};
     var totalValidated = 0;
+    var allValidated = 0;       // 全量已完成（不受时间窗限制），用于和顶部 KPI 完成率对齐
+    var beforeWindow = 0;       // 完成日早于窗口起点 → 不进曲线，但计入全量
     _trendIssues.forEach(function(i) {
         if (i.status === 'Validated') {
+            // 完成日口径：Actual End Date > Resolution Date > Updated（旧逻辑用 updated，
+            // 批量改状态会把大量用例堆到同一天，导致"实际执行"曲线失真）
             var d = '';
-            if (i.updated) d = i.updated.substring(0, 10);
+            if (i.actualEndDate) d = String(i.actualEndDate).substring(0, 10);
+            else if (i.resolutionDate) d = String(i.resolutionDate).substring(0, 10);
+            else if (i.updated) d = i.updated.substring(0, 10);
             else if (i.created) d = i.created.substring(0, 10);
+            if (d && start && d < start) beforeWindow++;
             if (d && (!start || d >= start) && (!end || d <= end)) {
                 validatedDaily[d] = (validatedDaily[d] || 0) + 1;
                 totalValidated++;
             }
+        }
+    });
+
+    // 全量已完成（与顶部 KPI 完成率同口径：done + closed + validated），用于对齐两个百分比
+    allValidated = 0;
+    _trendIssues.forEach(function(i) {
+        var _ns = normalizeStatus(i.status);
+        if (_ns === 'done' || _ns === 'closed' || _ns === 'validated') allValidated++;
+    });
+
+    // 计划开始：按用例自身的 Planned Start Date 聚合（逐条排期后每条日期不同）；
+    // 用例未设置时回退到所属测试计划的 Planned Start
+    var plannedDaily = {};
+    var totalPlanned = 0;      // 落在当前时间窗内的计划用例数
+    var plannedAll = 0;        // 有计划开始日期的用例总数（不限时间窗）
+    var unscheduled = 0;       // 所属计划未设置 Planned Start 的用例数
+    _trendIssues.forEach(function(i) {
+        var ps = _casePlannedStart(i);
+        if (!ps) { unscheduled++; return; }
+        plannedAll++;
+        if ((!start || ps >= start) && (!end || ps <= end)) {
+            plannedDaily[ps] = (plannedDaily[ps] || 0) + 1;
+            totalPlanned++;
         }
     });
 
@@ -980,9 +1565,25 @@ function renderDailyTrend(issues, reset) {
     trendHtml += '<button type="button" class="trend-preset btn btn-sm btn-outline" data-days="30">近30天</button>';
     trendHtml += '<span style="display:inline-flex;align-items:center;gap:4px;margin-left:4px;color:#666;">从 <input type="date" id="trend-start" value="' + (start || '') + '" style="padding:6px 10px;border:1px solid #ddd;border-radius:4px;font-size:13px;"> 至 <input type="date" id="trend-end" value="' + (end || '') + '" style="padding:6px 10px;border:1px solid #ddd;border-radius:4px;font-size:13px;"></span>';
     trendHtml += '</div>';
-    trendHtml += '<div style="margin-bottom:10px;font-size:13px;color:#666;">该时段已验证: <span style="color:#27ae60;font-weight:bold;">' + totalValidated + '</span> / ' + totalIssues + ' (' + progressPercent + '%)</div>';
+    var allPercent = totalIssues > 0 ? Math.round((allValidated / totalIssues) * 100) : 0;
+    trendHtml += '<div title="曲线只统计完成日落在当前时间窗内的用例；顶部「完成率」是全量口径" style="display:inline-block;margin:0 8px 10px 0;padding:4px 11px;background:#f6f8fc;border:1px solid #e6e9f2;border-radius:14px;font-size:12.5px;color:#55606e;">✅ 该时段完成 <span style="color:#2f80ed;font-weight:700;">' + totalValidated + '</span> / ' + totalIssues + ' <span style="color:#8a94a6;">(' + progressPercent + '%)</span>'
+        + '<span style="color:#c9cfda;margin:0 6px;">|</span>全量已完成 <span style="color:#1f6fb2;font-weight:700;">' + allValidated + '</span> <span style="color:#8a94a6;">(' + allPercent + '%)</span>'
+        + (beforeWindow ? '<span style="color:#8a94a6;">，其中 ' + beforeWindow + ' 条在窗口前完成未计入曲线</span>' : '')
+        + '</div>';
+    // 计划开始口径：按用例自身的 Planned Start 汇总（未设置时回退到所属计划）
+    var plannedPlansInWindow = {}, caseLevelCount = 0;
+    _trendIssues.forEach(function(i) {
+        var ps = _casePlannedStart(i);
+        if (ps && (!start || ps >= start) && (!end || ps <= end)) {
+            plannedPlansInWindow[i.parent] = true;
+            if (i.plannedStart) caseLevelCount++;
+        }
+    });
+    trendHtml += '<div style="display:inline-block;margin:0 8px 10px 0;padding:4px 11px;background:#fdf7ef;border:1px solid #f3e2c8;border-radius:14px;font-size:12.5px;color:#55606e;">🗓 按计划应开始 <span style="color:#c4761a;font-weight:700;">' + totalPlanned
+        + '</span> 条（覆盖 ' + Object.keys(plannedPlansInWindow).length + ' 个测试计划；其中 ' + caseLevelCount + ' 条按用例自身 Planned Start 排期）'
+        + (unscheduled ? ' · <span style="color:#c0392b;">未设置 Planned Start: ' + unscheduled + ' 条</span>' : '') + '</div>';
     var trendCanvasId = 'trend-chart-' + (_pieChartCounter++);
-    trendHtml += '<div style="position:relative; height:200px;"><canvas id="' + trendCanvasId + '"></canvas></div>';
+    trendHtml += '<div style="position:relative; height:268px;"><canvas id="' + trendCanvasId + '"></canvas></div>';
     trendHtml += '</div>';
     ownerRow.innerHTML = trendHtml;
 
@@ -1000,35 +1601,188 @@ function renderDailyTrend(issues, reset) {
     var canvasEl = document.getElementById(trendCanvasId);
     if (!canvasEl) return;
     var ctx = canvasEl.getContext('2d');
+
+    // 累计值（tooltip 里给出「截至该日累计 实际/计划」）
+    var cumActual = [], cumPlanned = [], _ca = 0, _cp = 0;
+    sortedDates.forEach(function(d) {
+        _ca += (validatedDaily[d] || 0);
+        _cp += (plannedDaily[d] || 0);
+        cumActual.push(_ca);
+        cumPlanned.push(_cp);
+    });
+
+    // ---- 呈现优化：周末底纹 + 顶部数值标注（仅 count>0 的日期，双序列自动错位） ----
+    var _trendWeekendBands = {
+        id: 'trendWeekendBands',
+        beforeDatasetsDraw: function(chart) {
+            var x = chart.scales.x, area = chart.chartArea;
+            if (!x || !area) return;
+            var popts = (chart.options.plugins && chart.options.plugins.trendWeekendBands) || {};
+            var dates = popts.dates || [];
+            if (!dates.length) return;
+            var c2 = chart.ctx;
+            c2.save();
+            c2.fillStyle = 'rgba(17,24,39,0.035)';
+            var step = dates.length > 1 ? Math.abs(x.getPixelForTick(1) - x.getPixelForTick(0)) : 16;
+            dates.forEach(function(iso, i) {
+                var d = new Date(iso + 'T00:00:00');
+                var wd = d.getDay();
+                if (wd !== 0 && wd !== 6) return;
+                var cx = x.getPixelForTick(i);
+                c2.fillRect(cx - step / 2, area.top, step, area.bottom - area.top);
+            });
+            c2.restore();
+        }
+    };
+    var _trendValueLabels = {
+        id: 'trendValueLabels',
+        afterDatasetsDraw: function(chart) {
+            var area = chart.chartArea;
+            if (!area) return;
+            var c2 = chart.ctx;
+            c2.save();
+            c2.font = '700 10px -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif';
+            c2.textAlign = 'center';
+            c2.textBaseline = 'bottom';
+            c2.lineWidth = 3;
+            c2.strokeStyle = 'rgba(255,255,255,0.92)';   // 白色描边，压在柱/线上也清晰
+            var placed = [];
+            chart.data.datasets.forEach(function(ds, di) {
+                var meta = chart.getDatasetMeta(di);
+                if (!meta || meta.hidden) return;
+                var color = di === 0 ? '#b26a00' : '#1f6fb2';
+                meta.data.forEach(function(el, i) {
+                    var v = ds.data[i];
+                    if (!v) return;
+                    var x = el.x, y = (di === 0 ? el.y - 3 : el.y - 9);
+                    var guard = 0;
+                    while (guard < 4 && placed.some(function(p) {
+                        return Math.abs(p.x - x) < 15 && Math.abs(p.y - y) < 11;
+                    })) { y -= 11; guard++; }
+                    if (y < area.top + 8) y = area.top + 8;
+                    placed.push({ x: x, y: y });
+                    c2.strokeText(String(v), x, y);
+                    c2.fillStyle = color;
+                    c2.fillText(String(v), x, y);
+                });
+            });
+            c2.restore();
+        }
+    };
+
+    var plannedSeries = sortedDates.map(function(d) { return plannedDaily[d] || 0; });
+
     _trendChartInstance = new Chart(ctx, {
-        type: 'line',
+        type: 'bar',
+        plugins: [_trendWeekendBands, _trendValueLabels],   // Chart.js v4: 内联插件必须放在 config.plugins（第三个参数在 v4 无效）
         data: {
             labels: sortedDates.map(function(d) { return d.substring(5); }), // MM-DD
             datasets: [{
-                label: '执行数量',
-                data: sortedDates.map(function(d) { return validatedDaily[d]; }),
-                borderColor: '#3498db',
-                backgroundColor: 'rgba(52,152,219,0.15)',
+                type: 'bar',
+                label: '计划开始（Planned Start）',
+                data: plannedSeries,
+                backgroundColor: 'rgba(230,126,34,0.16)',
+                hoverBackgroundColor: 'rgba(230,126,34,0.34)',
+                borderColor: 'rgba(230,126,34,0.55)',
+                borderWidth: 1,
+                borderRadius: 3,
+                barPercentage: 0.7,
+                categoryPercentage: 0.86,
+                order: 2
+            }, {
+                type: 'line',
+                label: '实际执行（已验证）',
+                data: sortedDates.map(function(d) { return validatedDaily[d] || 0; }),
+                borderColor: '#2f80ed',
+                borderWidth: 2.5,
+                backgroundColor: function(context2) {
+                    var ch = context2.chart, ar = ch.chartArea;
+                    if (!ar) return 'rgba(47,128,237,0.10)';
+                    var g = ch.ctx.createLinearGradient(0, ar.top, 0, ar.bottom);
+                    g.addColorStop(0, 'rgba(47,128,237,0.26)');
+                    g.addColorStop(1, 'rgba(47,128,237,0.02)');
+                    return g;
+                },
                 fill: true,
-                tension: 0.3,
-                pointRadius: 4,
-                pointBackgroundColor: '#3498db'
+                tension: 0.35,
+                pointRadius: function(context2) { return context2.raw ? 3.5 : 0; },
+                pointHoverRadius: 5,
+                pointBackgroundColor: '#ffffff',
+                pointBorderColor: '#2f80ed',
+                pointBorderWidth: 2,
+                order: 1
             }]
         },
         options: {
             responsive: true,
             maintainAspectRatio: false,
-            scales: { x: { grid: { display: false } }, y: { beginAtZero: true, ticks: { stepSize: 1 } } },
-            plugins: { legend: { display: false } }
+            animation: { duration: 450 },
+            layout: { padding: { top: 18, right: 6, left: 2, bottom: 0 } },
+            // 悬停同一天: 同时显示 实际 / 计划 两个值
+            interaction: { mode: 'index', intersect: false },
+            scales: {
+                x: {
+                    grid: { display: false },
+                    border: { color: '#e6e9f2' },
+                    ticks: { maxTicksLimit: 16, autoSkip: true, maxRotation: 0, color: '#8a94a6', font: { size: 11 } }
+                },
+                y: {
+                    beginAtZero: true,
+                    grace: '14%',
+                    grid: { color: 'rgba(17,24,39,0.06)', drawTicks: false },
+                    border: { display: false },
+                    ticks: { precision: 0, maxTicksLimit: 6, color: '#8a94a6', font: { size: 11 }, padding: 6 }
+                }
+            },
+            plugins: {
+                trendWeekendBands: { dates: sortedDates },   // 周末底纹用的日期序列
+                legend: {
+                    display: true,
+                    position: 'top',
+                    align: 'end',
+                    labels: { usePointStyle: true, pointStyle: 'rectRounded', boxWidth: 9, boxHeight: 9, padding: 14, color: '#55606e', font: { size: 11.5 } }
+                },
+                tooltip: {
+                    mode: 'index',
+                    intersect: false,
+                    backgroundColor: 'rgba(24,32,48,0.92)',
+                    padding: 10,
+                    cornerRadius: 6,
+                    titleFont: { size: 12, weight: '600' },
+                    bodyFont: { size: 11.5 },
+                    bodySpacing: 4,
+                    displayColors: true,
+                    callbacks: {
+                        title: function(items) {
+                            if (!items.length) return '';
+                            var iso = sortedDates[items[0].dataIndex];
+                            var wd = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][new Date(iso + 'T00:00:00').getDay()];
+                            return iso + '（' + wd + '）';
+                        },
+                        label: function(item) {
+                            return item.dataset.label + ': ' + (item.parsed.y || 0) + ' 条';
+                        },
+                        footer: function(items) {
+                            if (!items.length) return '';
+                            var i = items[0].dataIndex;
+                            return '截至该日累计 — 实际: ' + cumActual[i] + ' / 计划: ' + cumPlanned[i];
+                        }
+                    }
+                }
+            }
         }
     });
 }
-
 function applyTrendPreset(days) {
     var end = _trendExecEnd || _trendFmtDate(new Date());
     var start;
     if (days === 'all') {
         start = _trendExecStart;
+        // 与默认窗口一致：把计划开始日期（用例级 + 计划级）也覆盖进来，否则「全部」会把计划点挡在窗口外
+        _plannedStartWindowDates().forEach(function(v) {
+            if (!start || v < start) start = v;
+            if (!end || v > end) end = v;
+        });
     } else {
         var n = parseInt(days, 10) || 0;
         var d = new Date(end);
@@ -1079,7 +1833,7 @@ function renderPieChart(countMap, colorMap, displayNames) {
     var canvasId = 'pie-chart-' + (_pieChartCounter++);
     _pendingPieCharts.push({ canvasId: canvasId, labels: labels, data: data, colors: colors });
 
-    return '<div style="position:relative; height:260px;"><canvas id="' + canvasId + '"></canvas></div>';
+    return '<div style="position:relative; height:280px;"><canvas id="' + canvasId + '"></canvas></div>';
 }
 
 function initPendingPieCharts() {
@@ -1087,6 +1841,19 @@ function initPendingPieCharts() {
         var canvas = document.getElementById(item.canvasId);
         if (!canvas) return;
         var ctx = canvas.getContext('2d');
+        // 环外标签 + 引线需要左右留白: 按最长标签宽度动态预留(92~170px)
+        var sidePad = 92;
+        try {
+            var mctx = canvas.getContext('2d');
+            mctx.save();
+            mctx.font = 'bold 11px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+            item.labels.forEach(function(l) {
+                var w = mctx.measureText(l + ' 100.0%').width;
+                if (w + 44 > sidePad) sidePad = w + 44;
+            });
+            mctx.restore();
+        } catch (e) {}
+        sidePad = Math.min(Math.max(sidePad, 92), 170);
         new Chart(ctx, {
             type: 'doughnut',
             data: {
@@ -1101,6 +1868,7 @@ function initPendingPieCharts() {
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
+                layout: { padding: { top: 12, right: sidePad, bottom: 0, left: sidePad } },
                 plugins: {
                     pieLabel: {},
                     legend: { position: 'bottom', labels: { padding: 10, font: { size: 11 } } }
@@ -1189,8 +1957,41 @@ function initPendingPieCharts() {
                     },
                     plugins: {
                         legend: { position: 'bottom', labels: { padding: 10, font: { size: 11 } } },
-                        barLabels: {}
-                    }
+                        barLabels: {},
+                        // Hover on any segment of a stacked bar shows the WHOLE component row
+                        // (已完成 / 已豁免 / 未完成 + 总计 / 完成率) instead of only the hovered segment.
+                        tooltip: {
+                            mode: 'index',
+                            intersect: true,
+                            displayColors: true,
+                            // 已豁免 为 0 时整条不出现（用 filter 干净移除；
+                            // 若在 label 里 return null 会留下一个空行/空色块）
+                            filter: function(tooltipItem) {
+                                return !(tooltipItem.datasetIndex === 1 && (tooltipItem.parsed.y || 0) === 0);
+                            },
+                            callbacks: {
+                                title: function(items) {
+                                    return items.length ? items[0].label : '';
+                                },
+                                label: function(item) {
+                                    return item.dataset.label + ': ' + (item.parsed.y || 0) + ' 条';
+                                },
+                                footer: function(items) {
+                                    if (!items.length) return '';
+                                    var idx = items[0].dataIndex;
+                                    var total = item.totalData[idx] || 0;
+                                    var done = item.doneData[idx] || 0;
+                                    var waived = waivedData[idx] || 0;
+                                    var pending = total - done - waived;
+                                    var pct = total > 0 ? (done / total * 100).toFixed(1) : '0.0';
+                                    // 返回数组或 '\n' 拼接的字符串都可以：Chart.js 会把数组摊平成多行 footer。
+                                    // 注意（排查用）：chart.tooltip.footer 是「字符串数组」，不是 {lines} 对象
+                                    // （title 同理；只有 body 项才是 {lines: [...]}）。
+                                    return ['总计: ' + total + ' 条', '未完成合计: ' + pending + ' 条', '完成率: ' + pct + '%'];
+                                }
+                            }
+                        }
+                    },
                 },
                 plugins: [barLabelPlugin]
             });
