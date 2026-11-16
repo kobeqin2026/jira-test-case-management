@@ -15,26 +15,45 @@ function authenticateToken(req, res, next) {
     }
     
     var allSessions = sessions.getSessions();
-    var session = null;
-    var sessionKeys = Object.keys(allSessions);
-    for (var i = 0; i < sessionKeys.length; i++) {
-        if (allSessions[sessionKeys[i]].token === token) {
-            session = allSessions[sessionKeys[i]];
-            break;
+    var session = sessions.getSessionByToken ? sessions.getSessionByToken(token) : null;
+    if (!session) {
+        var sessionKeys = Object.keys(allSessions);
+        for (var i = 0; i < sessionKeys.length; i++) {
+            if (allSessions[sessionKeys[i]].token === token) {
+                session = allSessions[sessionKeys[i]];
+                break;
+            }
         }
     }
     
     if (!session) {
         return res.status(401).json({ success: false, message: '无效的 token' });
     }
-    
-    if (Date.now() - session.createdAt > 24 * 60 * 60 * 1000) {
-        delete allSessions[session.username];
+
+    // 会话有效期 = 滑动空闲 72h + 绝对上限 30 天 (2026-11-13 起; 旧的固定 24h 会让第二天回来必 401)
+    if (sessions.isSessionExpired(session)) {
+        if (sessions.purgeSession) {
+            sessions.purgeSession(token);
+        } else {
+            delete allSessions[session.username];
+        }
         sessions.saveSessions();
         res.clearCookie('token');
-        return res.status(401).json({ success: false, message: '登录已过期，请重新登录' });
+        return res.status(401).json({ success: false, message: '登录已过期（连续 3 天无操作），请重新登录' });
     }
-    
+
+    // 滑动续期 + cookie 滚动(节流 1h), 避免浏览器 cookie 先于会话过期
+    if (sessions.touchSession) sessions.touchSession(session);
+    var now = Date.now();
+    if (!session.cookieRefreshedAt || now - session.cookieRefreshedAt > sessions.COOKIE_REFRESH_INTERVAL_MS) {
+        session.cookieRefreshedAt = now;
+        res.cookie('token', token, {
+            httpOnly: true,
+            maxAge: sessions.COOKIE_MAX_AGE_MS,
+            sameSite: 'lax'
+        });
+    }
+
     req.user = session;
     next();
 }

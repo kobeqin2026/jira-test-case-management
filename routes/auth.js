@@ -96,16 +96,19 @@ router.post('/login', async function(req, res) {
             jiraPat: user.jiraPat || '',
             jiraName: user.jiraName || '',
             token: token,
-            createdAt: Date.now()
+            createdAt: Date.now(),
+            lastSeenAt: Date.now(),
+            cookieRefreshedAt: Date.now()
         };
         
         logOperation(username, 'LOGIN', 'users', { role: user.role });
         console.log('User logged in: ' + username + ', role: ' + user.role);
         await saveSessions();
         
+        // cookie 与绝对上限对齐(30 天); 会话按「滑动空闲 72h」续期, 见 middleware/auth.js
         res.cookie('token', token, {
             httpOnly: true,
-            maxAge: 24 * 60 * 60 * 1000,
+            maxAge: sessions.COOKIE_MAX_AGE_MS,
             sameSite: 'lax'
         });
         

@@ -2759,10 +2759,33 @@ function escapeHtml(text) {
     return div.innerHTML;
 }
 
-// 统一 API 失败提示: 401=会话已失效(同账号重复登录/重启等会顶掉旧 token), 引导重新登录; 其他显示服务端错误原文
+// 统一 API 失败提示: 401=会话已失效(连续 3 天无操作才会失效), 自动弹出登录框; 其他显示服务端错误原文
+function handleSessionExpired() {
+    authToken = '';
+    try {
+        localStorage.removeItem('testcaseAuthToken');
+        localStorage.removeItem('testcaseUserRole');
+        localStorage.removeItem('testcaseUserName');
+    } catch (e) {}
+    var ov = document.getElementById('login-overlay');
+    if (ov) ov.style.display = 'flex';
+    var errEl = document.getElementById('login-error');
+    if (errEl) {
+        errEl.textContent = '登录已过期（连续 3 天无操作），请重新登录';
+        errEl.style.display = 'block';
+    }
+    var lo = document.getElementById('btn-logout');
+    if (lo) lo.style.display = 'none';
+    var pf = document.getElementById('btn-profile');
+    if (pf) pf.style.display = 'none';
+    var bar = document.getElementById('auto-refresh-bar');
+    if (bar) bar.style.display = 'none';
+}
+
 function renderApiError(status, data) {
     if (status === 401) {
-        return '<div class="empty-state"><p>🔒 登录已失效，请 <a href="#" onclick="event.preventDefault();location.reload();return false;">刷新页面重新登录</a></p></div>';
+        handleSessionExpired();
+        return '<div class="empty-state"><p>🔒 登录已过期（连续 3 天无操作），已在下方弹出登录框，重新登录即可继续</p></div>';
     }
     var msg = (data && (data.message || data.error)) ? (data.message || data.error) : '加载失败';
     return '<div class="empty-state"><p>加载失败: ' + escapeHtml(String(msg)) + '</p></div>';
