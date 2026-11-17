@@ -67,6 +67,10 @@ function jiraRequest(method, apiPath, body, userPat) {
         var https = parsedUrl.protocol === 'https:' ? require('https') : require('http');
 
         var req = https.request(options, function(resp) {
+            // 必须设置 utf8 解码：JIRA 返回的中文（状态名/标题等）可能被 TCP chunk 边界截断，
+            // 直接 data += chunk 会按 chunk 逐个 toString()，截断的多字节字符会变成 \ufffd 乱码。
+            // setEncoding 内部用 StringDecoder，跨 chunk 的半字符会被正确拼接。
+            resp.setEncoding('utf8');
             var data = '';
             resp.on('data', function(chunk) { data += chunk; });
             resp.on('end', function() {

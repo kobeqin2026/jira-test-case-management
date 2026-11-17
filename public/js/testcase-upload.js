@@ -320,11 +320,13 @@ document.getElementById('login-pass').addEventListener('keydown', function(e) {
 // ============ Tab Switching ============
 
 function switchTab(tab) {
-    document.querySelectorAll('.tab-btn').forEach(function(btn, i) {
-        btn.classList.toggle('active', (tab === 'browse' && i === 0) || (tab === 'upload' && i === 1));
+    document.querySelectorAll('.tab-btn').forEach(function(btn) {
+        btn.classList.toggle('active', btn.id === 'tab-btn-' + tab);
     });
     document.querySelectorAll('.tab-content').forEach(function(el) { el.classList.remove('active'); });
     document.getElementById('tab-' + tab).classList.add('active');
+    // 会议纪要页：每次切回来刷新历史列表（避免登录前后时序导致显示"暂无"）
+    if (tab === 'report' && window.loadReportHistory) window.loadReportHistory();
 }
 
 // ============ Header UI & User Management ============

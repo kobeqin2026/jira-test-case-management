@@ -5,3 +5,4 @@ logs/
 .env
 .ecosystem.config.js
 ### logs
+scripts/__pycache__/

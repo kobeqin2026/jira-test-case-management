@@ -292,8 +292,9 @@
 
     <!-- Tab Navigation -->
     <div class="tab-nav">
-        <button class="tab-btn active" onclick="switchTab('browse')">📋 Test Case 库</button>
+        <button class="tab-btn active" id="tab-btn-browse" onclick="switchTab('browse')">📋 Test Case 库</button>
         <button class="tab-btn" id="tab-btn-upload" onclick="switchTab('upload')">📤 批量上传</button>
+        <button class="tab-btn" id="tab-btn-report" onclick="switchTab('report')">📝 会议纪要</button>
     </div>
 
     <div class="container">
@@ -688,6 +689,56 @@
                 </div>
             </div>
         </div>
+
+        <!-- ==================== TAB 3: 会议纪要 ==================== -->
+        <div class="tab-content" id="tab-report">
+            <div class="card">
+                <h3>📝 一键生成会议纪要（HTML）</h3>
+                <p style="font-size:13px;color:#777;margin:6px 0 14px;">
+                    上传当周周会 PPT（.pptx）→ 自动读取各 Domain 页与 Bug triage 页，并结合 JIRA
+                    <b>当下</b>用例进度，生成一份可直接发送的会议纪要 HTML：整体进展 / 各 Domain 状态 /
+                    用例执行明细 / Highest bug triage，所有 JIRA key 都是可点链接。
+                </p>
+                <div class="config-row" style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end;">
+                    <div class="config-field">
+                        <label>Test Plan Key *</label>
+                        <input type="text" id="rp-plan" placeholder="如 PROJ-1234" style="width:170px;padding:8px;border:1px solid #ddd;border-radius:4px;font-size:13px;" />
+                    </div>
+                    <div class="config-field">
+                        <label>周次（留空自动识别）</label>
+                        <input type="text" id="rp-week" placeholder="WW46" style="width:150px;padding:8px;border:1px solid #ddd;border-radius:4px;font-size:13px;" />
+                    </div>
+                    <div class="config-field">
+                        <label>会议日期</label>
+                        <input type="date" id="rp-date" style="width:160px;padding:8px;border:1px solid #ddd;border-radius:4px;font-size:13px;" />
+                    </div>
+                    <div class="config-field">
+                        <label>当周 PPT（.pptx）*</label>
+                        <input type="file" id="rp-file" accept=".pptx,.pptm" style="font-size:13px;" />
+                    </div>
+                </div>
+                <div style="margin-top:16px;display:flex;align-items:center;gap:12px;">
+                    <button class="btn btn-primary" id="rp-generate" onclick="generateMinutes()">🚀 生成会议纪要</button>
+                    <span id="rp-status" style="font-size:13px;color:#777;"></span>
+                </div>
+            </div>
+
+            <div class="card" id="rp-result" style="display:none;">
+                <h3>生成结果</h3>
+                <div id="rp-summary" style="display:flex;gap:10px;flex-wrap:wrap;margin:10px 0 12px;"></div>
+                <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;">
+                    <a class="btn btn-outline btn-sm" id="rp-open" target="_blank" style="display:none;">🔗 新窗口打开</a>
+                    <a class="btn btn-outline btn-sm" id="rp-download" download style="display:none;">⬇️ 下载 HTML</a>
+                    <button class="btn btn-outline btn-sm" onclick="printMinutes()">🖨️ 打印 / 存 PDF</button>
+                </div>
+                <iframe id="rp-preview" style="width:100%;height:920px;border:1px solid #e0e0e0;border-radius:6px;background:#fff;"></iframe>
+            </div>
+
+            <div class="card">
+                <h3>最近生成</h3>
+                <div id="rp-history" style="font-size:13px;color:#777;">加载中…</div>
+            </div>
+        </div>
 <!-- Create Test Cases Dialog -->
     <div class="login-overlay" id="create-tc-modal" style="display:none;">
         <div class="login-box" style="width:420px;">
@@ -799,5 +850,6 @@
 
     <script src="/js/chart.umd.min.js?v=1"></script>
     <script src="/js/testcase-upload.js?v=107"></script>
+    <script src="/js/report.js?v=2"></script>
 </body>
 </html>

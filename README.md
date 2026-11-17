@@ -1,6 +1,6 @@
 # JIRA Test Case Manager
 
-[![version](docs/badge-version.svg)](https://github.com/kobeqin2026/jira-test-case-management/releases/tag/v1.7.0)
+[![version](docs/badge-version.svg)](https://github.com/kobeqin2026/jira-test-case-management/releases/tag/v1.9.0)
 
 JIRA 测试用例管理系统 — Test Plan / Task / Sub-task 全生命周期管理与统计平台。
 
@@ -36,6 +36,69 @@ JIRA 测试用例管理系统 — Test Plan / Task / Sub-task 全生命周期管
 - **JIRA PAT 管理**：每个用户设置自己的 JIRA Personal Access Token
 - **角色控制**：管理员 / 普通用户权限分离
 - **登录保持**：基于 Token 的会话管理
+
+### 📝 会议纪要一键生成（v1.9.0）
+
+把「周会 PPT + JIRA 实时数据」合成一份可直接发出的会议纪要 HTML。全程**只读 JIRA**（只有 GET），不修改任何用例/缺陷。
+
+**输入**
+
+| 项 | 说明 |
+|---|---|
+| Test Plan Key | 顶层 Test Plan 的 key（如 `PROJ-1234`），用来定位整棵用例树。默认值由 `REPORT_DEFAULT_PLAN` 环境变量注入、经 `/api/config` 下发，仓库里不写死项目 key |
+| 周次 | 可留空 → 自动从 PPT 首页标题里的 `WW\d+` 识别 |
+| 会议日期 | 默认今天；用于 Highest bug 的「`created <= 会议日`」快照，也进文件名 |
+| 当周 PPT | `.pptx` / `.pptm`，base64 随 JSON POST 上传（3~5MB 原始体积） |
+
+**处理链路**
+
+1. `GET /rest/api/2/issue/<planKey>` 取计划名 → 2. `scripts/pptx_extract.py`（python-pptx）把 PPT 摊平成 JSON：每页 `title / texts / tables / status / bigPicture` → 3. `collectDomains()` 按标题 `… FE Status` 识别 Domain 页（跳过前 2 页封面/目录与 Bug triage 页），页内表格按表头分流：
+   - 表头含 `JIRA No / JIRA ID` → **Bug 表** → Hot issue（key / 描述 / 优先级 / 负责人 / debug 进展）
+   - 其余（`feature list / task list` 或 ≥4 列）→ **Feature 表** → 按状态列分桶成 `Validated` / `In Progress`
+
+4. `parent in (…)` 递归拉子计划（issuelinks 外链 + `parent` 字段两种关系都收），聚合 total / Validated / WAIVED / 进行中 / 未开始 / 执行率，并按 Priority 再切一刀
+5. 计划周期 = 各计划 Planned Start（`customfield_10300`）最小值 ~ Planned End（`customfield_10301`）最大值
+6. Highest bug = `project = <planKey 前缀> AND issuetype = Bug AND priority = Highest AND created <= "<会议日>"`，上限 20 条
+7. 渲染自包含 HTML（CSS 全内联、无外部资源）并落盘 `data/reports/<planKey>-<WW>-<yyyymmdd>-<ts>.html`
+
+**输出结构（五节）**
+
+| 节 | 内容 |
+|---|---|
+| 一、整体进展 | 6 张数字卡（用例总数 / Validated / 执行率 / 进行中 / 未开始 / WAIVED）+ 计划周期 + Priority 分布表（用例数 / Validated / 执行率） |
+| 二、各 Domain 状态 | 每个域一段，标题 `N) 域名`，正文三段式 `Validated：` / `In Progress：` / `Hot issue：`（有高亮时追加 `Highlights：`） |
+| 三、用例执行明细 | 10 列：Domain Key · Domain 名称 · 用例总数 · 已执行(Validated) · 执行率 · 未开始 · 进行中 · 已完成未验证 · 已豁免 · 阻塞/其他 |
+| 四、Highest bug triage | # · JIRA ID · 描述 · Priority · Component · Assignee · 状态/日期 |
+| 五、数据核对说明 | 口径自述（WAIVED 不计入分子）+「PPT 数字与表格不一致时以 JIRA 为准」 |
+
+**渲染规则（都是实际发周会时被挑出来的细节，别再改回去）**
+
+- **链接**：所有 JIRA key 自动变蓝字超链接，正文**不出现明文 URL**；PPT 里的 `[KEY] 名称 - Jira <url>`、裸 `<url>`、`…/browse/KEY` 三种写法都会先收敛成纯 `KEY` 再统一渲染
+- **字体与颜色**：Domain 段统一「等线 DengXian / 12pt（小四）」+ 纯黑正文，域标题加粗；不使用绿/橙状态色、不用彩色左边框（打印黑白与投影都清晰）
+- **不重复状态词**：条目已归在 `Validated：` / `In Progress：` 行下时，不再逐条追加 `Validated / Done / OK / 进行中 / pass`；只有带信息量的说明（如「测试中，进度 80%」「缺 8 卡机器」）才保留
+- **占位符不入正文**：`/`、`-`、`—`、`N/A`、`none`、`无`、`待定` 视为空；Priority 列不当内容；条目按 `任务：补充说明` 拼接，去尾部冒号与重复片段
+- **key 归一**：PPT 里只写数字的 key（如 `1455`）自动补项目前缀 → `<PROJECT>-1455`；状态列本身就是一个 key 时改写为「见 hot issue」
+- **Highlights 降噪**：纯百分比 / 纯数字 / `-` 之类的行会被过滤，`Highlights:`、`Hot Issues:` 这类标题行不进正文
+
+**预览 / 导出**
+
+- 页面内 iframe 预览 → 新窗口打开 → 下载 HTML → `window.print()` 直接出 PDF（`@media print` 已做分页保护：域块不跨页、标题不落单）
+- 历史报告列表（最近 12 份，带生成时间与体积）可回溯；**每次切回该标签页都会重新拉一次**（避免登录前 401 被缓存成「暂无历史」）
+
+**接口**
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | `/api/report/generate` | `{planKey, week, meetingDate, fileName, fileBase64}` → `{success, file, url, html, summary}` |
+| GET | `/api/report/list` | 已生成报告列表（`name / size / mtime / url`，按时间倒序） |
+| GET | `/api/report/file/:name` | 预览或下载某一份（需登录；`path.basename` 防目录穿越，只放行 `.html`） |
+
+**前置条件与已知坑**
+
+- 后端需 `python3` + `python-pptx`（`routes/report.js` 用 `execFile` 调 `scripts/pptx_extract.py`，120s 超时、32MB stdout 上限）
+- nginx 必须放宽上传体积 `client_max_body_size 50m;`，否则 413；`express.json` limit 已从 5mb 提到 40mb（base64 ≈ 1.37× 原始体积）
+- Domain 页靠标题正则识别：标题需含 `… FE Status`，否则该页不会被抽成域段（会在报告里提示「该域本周无结构化表格」或整体「未识别到 Domain 页」）
+- Bug triage 页（标题含 `bug triage / highest bug / high bug / bug 状态`）只作为 Highest 列表的数据源，不参与域段抽取
 
 ### ⚙️ 系统配置
 - **JIRA 连接**：支持 JIRA Server/Data Center PAT 认证
@@ -96,6 +159,9 @@ DEFAULT_USER_PASSWORD=CHANGE_ME
 
 # 创建 issue 时的默认 reporter（JIRA 用户名/工号；未配置则省略 reporter 字段，JIRA 自动落到 PAT owner）
 JIRA_DEFAULT_REPORTER=CHANGE_ME_REPORTER
+
+# 会议纪要页的默认 Test Plan Key（可选；留空则页面上手动填，公开仓不内置任何项目 key）
+REPORT_DEFAULT_PLAN=
 ```
 
 ### 3. 启动服务
@@ -110,10 +176,14 @@ npm start
 服务默认运行在 `http://localhost:3001`
 
 ### 4. Nginx 配置（可选）
+> 会议纪要生成要 POST 几 MB 的 pptx（base64），**必须放宽上传体积**，否则 8089 直接返回 413：
+> 在 server 块里加 `client_max_body_size 50m;`
+
 ```nginx
 server {
     listen 8089;
     server_name your-server;
+    client_max_body_size 50m;
 
     location / {
         proxy_pass http://127.0.0.1:3001;
@@ -132,7 +202,8 @@ jira-testcase-manager/
 ├── package.json
 ├── routes/
 │   ├── auth.js               # 用户认证路由（登录/注册/用户管理）
-│   └── testcase.js           # 核心业务路由（Test Plan/Sub-task/LLM评估）
+│   ├── testcase.js           # 核心业务路由（Test Plan/Sub-task/LLM评估）
+│   └── report.js             # 会议纪要生成路由（pptx + JIRA -> HTML 报告）
 ├── lib/
 │   ├── jiraConfig.js         # JIRA 连接配置
 │   ├── users.js              # 用户数据管理
@@ -147,10 +218,14 @@ jira-testcase-manager/
 ├── public/
 │   ├── jira-test-case-management.html  # 主页面
 │   └── js/
-│       └── testcase-upload.js          # 前端核心逻辑（~2800行）
+│       ├── testcase-upload.js          # 前端核心逻辑（~2800行）
+│       └── report.js                   # 会议纪要页逻辑（上传/生成/预览）
+├── scripts/
+│   └── pptx_extract.py       # pptx -> JSON（python-pptx；供报告生成调用）
 ├── deploy.sh                 # 部署脚本
 └── data/                     # 运行时数据（不纳入版本管理）
     ├── sessions.json
+    ├── reports/              # 生成过的会议纪要 HTML
     └── ...
 ```
 
@@ -185,6 +260,13 @@ jira-testcase-manager/
 | PUT | `/api/testcase/issue/:key/status` | 更新 Issue 状态 |
 | PUT | `/api/testcase/issue/:key/assignee` | 更新 Issue 负责人 |
 
+### 会议纪要
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | `/api/report/generate` | 传 pptx(base64) + planKey/week/meetingDate → 生成 HTML 纪要，返回 {file,url,html,summary} |
+| GET | `/api/report/list` | 已生成报告列表 |
+| GET | `/api/report/file/:name` | 预览/下载某份报告（需登录） |
+
 ### LLM 智能功能
 | 方法 | 路径 | 说明 |
 |------|------|------|
@@ -193,6 +275,37 @@ jira-testcase-manager/
 | GET | `/api/testcase/template` | 下载 CSV 上传模板 |
 
 ## 版本历史
+
+### v1.9.0 (2026-11-17)
+**「会议纪要」正式发布 + 排版/口径四轮打磨 + 公开仓去敏**
+
+**新增**
+- **会议纪要一键生成**（详见上文「会议纪要一键生成」章节）：新增 `routes/report.js`（生成/列表/预览三个接口）、`scripts/pptx_extract.py`（python-pptx 摊平 PPT）、`public/js/report.js`（上传/生成/预览/历史）；主页新增第三个标签页；`express.json` 上限 5mb → 40mb；`data/reports/` 存生成物（不进版本管理）
+
+**修复**
+- **标签页高亮错位**：`switchTab` 原先按按钮序号判断选中态，新增第三个标签页后高亮会落错 → 改为按 tab id 判断
+- **历史报告「暂无历史」假象**：登录前的 `DOMContentLoaded` 拉到 401 会渲染成空列表，且切回标签页不刷新 → 现在每次切回都重新拉一次
+- **JIRA 中文乱码**：`jiraRequest` 增加 `resp.setEncoding('utf8')`，避免 UTF-8 中文描述被按 latin1 截断
+- **PPT 裸数字 key**：deck 里只写数字的 key（`1455`）不会拼成可点链接 → 自动补项目前缀 `<PROJECT>-1455`
+- **Highlights 噪声**：`40%`、`-`、`1/3` 这类纯数字行与 `Highlights:` / `Hot Issues:` 标题行不再进正文
+
+**排版收敛（三轮迭代，均为实际发周会时提出的样式要求）**
+1. 去掉每条用例后的冗余状态词（`Validated` / `In progress` / `OK` / `Done` …）—— 已归在 `Validated：` / `In Progress：` 行下就不必逐条重复
+2. Domain 段全部改黑体：正文纯黑 + 等线 12pt（小四）、域标题加粗；去掉绿/橙状态色与彩色左边框
+3. 去掉占位符 `:`、`/` 尾巴与优先级后缀（Priority 列不再拼进正文）；标题式 `Highlights` 段与正文同款字重
+
+**工程/文档**
+- `deploy.sh` 改为部署 `public/js/*.js` **全部脚本**（此前只拷贝单个文件，新增的 `report.js` 会漏发，页面报 `generateMinutes is not defined`）
+- README 补 nginx `client_max_body_size 50m` 说明、目录结构（`routes/report.js` / `scripts/` / `data/reports/`）与 `REPORT_DEFAULT_PLAN` 环境变量
+- **公开仓去敏**：报告模块里的内部标识泛化 —— 域标题正则改为任意项目前缀、URL 清洗正则去掉内网主机名、issue key 正则不再写死项目前缀；页面默认 Test Plan Key 改为 `REPORT_DEFAULT_PLAN` 环境变量 + `/api/config` 下发，仓库内不含具体项目 key
+- 前端版本 `testcase-upload.js v107`、`report.js v2`
+
+### v1.8.0 (2026-11-16)
+- **新增「会议纪要」标签页**：上传当周周会 pptx + 选 Test Plan → 一键生成 HTML 会议纪要
+  （PPT 的 Domain/Bug triage 内容 + JIRA 实时用例进度合并，JIRA key 全为可点链接）
+- 新增 `routes/report.js`、`scripts/pptx_extract.py`、`public/js/report.js`
+- `express.json` 上限 5mb → 40mb（pptx 走 base64 上传）
+- 修复 `switchTab` 按按钮序号判断选中态（新增第三个标签页后高亮会错位）→ 改为按 id 判断
 
 ### v1.7.0 (2026-11-09)
 **每日执行趋势可视化重做 + 完成日口径修正 + 自动刷新 / 导出 / 饼图优化**

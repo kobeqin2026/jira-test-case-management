@@ -44,7 +44,7 @@ process.on('unhandledRejection', function(err) {
 });
 
 // Middleware
-app.use(express.json({ limit: '5mb' }));
+app.use(express.json({ limit: '40mb' }));   // 会议纪要生成要带 base64 的 pptx（几 MB）
 app.use(cookieParser());
 app.use(express.static(path.join(__dirname, 'public')));
 
@@ -62,13 +62,15 @@ app.use('/api/', generalLimiter);
 // Routes
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/testcase', require('./routes/testcase'));
+app.use('/api/report', require('./routes/report'));
 
 // 运行配置下发(env 注入; 公开仓默认仅占位示例, 真实值在 ~/skills/.env)
 app.get('/api/config', function(req, res) {
     var jiraCfg = require('./lib/jiraConfig');
     res.json({
         jiraBase: jiraCfg.baseUrl,
-        tcProject: process.env.TESTCASE_PROJECT || 'DEMO-TC'
+        tcProject: process.env.TESTCASE_PROJECT || 'DEMO-TC',
+        reportPlan: process.env.REPORT_DEFAULT_PLAN || ''    // 会议纪要页默认 Test Plan Key（公开仓不内置具体项目 key）
     });
 });
 
