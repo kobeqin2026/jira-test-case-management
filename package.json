@@ -1,6 +1,6 @@
 {
   "name": "jira-testcase-manager",
-  "version": "1.9.0",
+  "version": "1.9.1",
   "description": "JIRA Test Case Management - Test Plan / Task / Sub-task status management",
   "main": "server.js",
   "scripts": {

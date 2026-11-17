@@ -147,8 +147,12 @@ function extractDeck(filePath) {
 }
 
 // ------------------------------------------------------------ 域块抽取规则
-// 域页标题形如 "<项目KEY> [<Domain>] FE Status"（项目前缀任意，不写死具体项目）
-var DOMAIN_RE = /^(?:[A-Z][A-Z0-9]{2,}\s*)?\[?([A-Za-z0-9 \/&\.\-]+?)\]?\s*FE\s*Status/i;
+// 域页标题形如 "<项目KEY> [<Domain>] FE Status" / "<Domain> FE Status"（项目前缀任意，不写死具体项目）
+// 注意：前缀必须单独用「大小写敏感」的全大写规则剥离 —— 早期合并成一个 /i 正则时，
+// "Board Power FE Status" 里的 "Board" 会被当成项目前缀吃掉，域名叫成 "Power"（v1.9.1 修）。
+var DOMAIN_BRACKET_RE = /^(?:\S+\s*)?\[([^\]]+)\]\s*FE\s*Status/i;   // 前缀可有可无: "PROJ [KMD] FE Status" / "[KMD] FE Status"
+var DOMAIN_PLAIN_RE = /^([A-Za-z0-9 \/&\.\-]+?)\s*FE\s*Status/i;
+var PROJECT_PREFIX_RE = /^[A-Z][A-Z0-9]{2,}\s+/;
 var KEY_RE_SRC = '[A-Z][A-Z0-9]{1,9}-\\d+';          // 通用 issue key 形态: PROJ-123
 var TRIAGE_RE = /bug triage|highest bug|high bug|bug 状态/i;
 
@@ -200,9 +204,11 @@ function statusTag(st) {
 }
 
 function domainOf(slide) {
-    var m = DOMAIN_RE.exec((slide.title || '').replace(/\x0b/g, ' '));
+    var title = (slide.title || '').replace(/\x0b/g, ' ');
+    var m = DOMAIN_BRACKET_RE.exec(title) || DOMAIN_PLAIN_RE.exec(title);
     if (!m) return null;
-    var name = m[1].trim().replace(/\s+/g, ' ');
+    var name = m[1].trim().replace(/\s+/g, ' ').replace(PROJECT_PREFIX_RE, '');
+    if (!name) return null;
     if (/^PHE$/i.test(name)) name = 'Board（PHE）';
     if (/^Board Power$/i.test(name)) name = 'Board (Power)';
     return name;

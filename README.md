@@ -1,6 +1,6 @@
 # JIRA Test Case Manager
 
-[![version](docs/badge-version.svg)](https://github.com/kobeqin2026/jira-test-case-management/releases/tag/v1.9.0)
+[![version](docs/badge-version.svg)](https://github.com/kobeqin2026/jira-test-case-management/releases/tag/v1.9.1)
 
 JIRA 测试用例管理系统 — Test Plan / Task / Sub-task 全生命周期管理与统计平台。
 
@@ -275,6 +275,16 @@ jira-testcase-manager/
 | GET | `/api/testcase/template` | 下载 CSV 上传模板 |
 
 ## 版本历史
+
+### v1.9.1 (2026-11-17)
+**修复域页标题的「项目前缀」误剥离（v1.9.0 去敏引入）**
+
+- 去敏时把 `<项目KEY>` 前缀并进了带 `/i` 的域标题正则 `^(?:[A-Z][A-Z0-9]{2,}\s*)?…`，**大小写不敏感导致普通单词也被当成项目前缀**：标题 `Board Power FE Status`（无方括号）被解析成域名 `Power`，与独立的 `Power` 域合并 → 域段少一段、内容串台
+- 改为两条正则 + 一个**大小写敏感**的前缀剥离规则：
+  - `DOMAIN_BRACKET_RE` 先试方括号形式 `[<Domain>] FE Status`（前缀可有可无）
+  - `DOMAIN_PLAIN_RE` 兜底 `<Domain> FE Status`
+  - `PROJECT_PREFIX_RE = /^[A-Z][A-Z0-9]{2,}\s+/`（无 `/i`）只吃全大写项目 key，`Board` 这类混写单词保留
+- 实测（WW46 真 PPT，13 个 `… FE Status` 页）：`[Board Power]` → `Board (Power)`、`Power` → `Power`、11 个域与 v1.9.0 一致无回归；拿掉方括号的 `Board Power FE Status` 也从 `Power` 修正回 `Board (Power)`
 
 ### v1.9.0 (2026-11-17)
 **「会议纪要」正式发布 + 排版/口径四轮打磨 + 公开仓去敏**
